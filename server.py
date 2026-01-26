@@ -8096,9 +8096,126 @@ async def create_project_dispute(
         
         # Commit all changes
         await db.commit()
-        
+
         logger.info(f"✅ Dispute created successfully for project {project_id}")
-        
+
+        # 📧 Send email notification to admin
+        try:
+            admin_email = os.getenv('ADMIN_EMAIL', 'bitebids@gmail.com')
+
+            subject = f"🚨 New Dispute Opened - Project: {project.title}"
+
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        line-height: 1.6;
+                        color: #333;
+                        max-width: 600px;
+                        margin: 0 auto;
+                        padding: 20px;
+                    }}
+                    .header {{
+                        background: linear-gradient(135deg, #ef4444, #dc2626);
+                        color: white;
+                        padding: 30px;
+                        border-radius: 10px 10px 0 0;
+                        text-align: center;
+                    }}
+                    .content {{
+                        background: #f8fafc;
+                        padding: 30px;
+                        border-radius: 0 0 10px 10px;
+                    }}
+                    .detail-box {{
+                        background: white;
+                        padding: 20px;
+                        margin: 15px 0;
+                        border-radius: 8px;
+                        border-left: 4px solid #ef4444;
+                    }}
+                    .label {{
+                        font-weight: 600;
+                        color: #64748b;
+                        margin-bottom: 5px;
+                    }}
+                    .value {{
+                        color: #1e293b;
+                        margin-bottom: 15px;
+                    }}
+                    .reason-box {{
+                        background: #fef2f2;
+                        padding: 15px;
+                        border-radius: 8px;
+                        border-left: 4px solid #ef4444;
+                        margin: 15px 0;
+                    }}
+                    .button {{
+                        display: inline-block;
+                        padding: 12px 30px;
+                        background: #ef4444;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 8px;
+                        margin-top: 20px;
+                        font-weight: 600;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1 style="margin: 0; font-size: 24px;">🚨 New Dispute Opened</h1>
+                    <p style="margin: 10px 0 0 0; opacity: 0.9;">Immediate admin attention required</p>
+                </div>
+
+                <div class="content">
+                    <div class="detail-box">
+                        <div class="label">Project:</div>
+                        <div class="value"><strong>{project.title}</strong></div>
+
+                        <div class="label">Project ID:</div>
+                        <div class="value">{project_id}</div>
+
+                        <div class="label">Disputed By:</div>
+                        <div class="value"><strong>{dispute_opener.title()}</strong></div>
+
+                        <div class="label">Developer:</div>
+                        <div class="value">{developer.name} ({developer.email})</div>
+
+                        <div class="label">Investor:</div>
+                        <div class="value">{investor.name} ({investor.email})</div>
+                    </div>
+
+                    <div class="reason-box">
+                        <div class="label">Dispute Reason:</div>
+                        <div class="value">{reason}</div>
+
+                        {f'<div class="label">Additional Notes:</div><div class="value">{notes}</div>' if notes else ''}
+                    </div>
+
+                    <p style="color: #64748b; margin-top: 20px;">
+                        Please review this dispute and take appropriate action in the admin panel.
+                    </p>
+
+                    <a href="https://bite-bids.vercel.app/admin/disputes" class="button">
+                        Review Dispute
+                    </a>
+                </div>
+            </body>
+            </html>
+            """
+
+            # Send email asynchronously (don't block the response)
+            await send_email(admin_email, subject, html_content)
+            logger.info(f"📧 Dispute notification email sent to admin")
+
+        except Exception as email_error:
+            logger.error(f"Failed to send dispute notification email: {email_error}")
+            # Don't fail the request if email fails
+
         return {
             "success": True,
             "message": "Dispute created successfully. An admin will review your case.",
@@ -8869,6 +8986,152 @@ async def confirm_payout_method_for_chat(
         await db.commit()
 
         logger.info(f"Developer {developer.email} updated payout method to {payout_method}")
+
+        # 📧 Send email notification to admin when developer confirms payout
+        if payout:
+            try:
+                admin_email = os.getenv('ADMIN_EMAIL', 'bitebids@gmail.com')
+
+                # Get project details
+                project_query = await db.execute(
+                    select(Project).where(Project.id == room.project_id)
+                )
+                project = project_query.scalar_one_or_none()
+
+                # Get investor details
+                investor_query = await db.execute(
+                    select(User).where(User.id == room.investor_id)
+                )
+                investor = investor_query.scalar_one_or_none()
+
+                subject = f"💰 Developer Confirmed Payout Method - {project.title if project else 'Unknown Project'}"
+
+                payout_method_display = {
+                    'paypal': 'PayPal',
+                    'wise': 'Wise',
+                    'bank_transfer': 'Bank Transfer',
+                    'crypto': 'Cryptocurrency'
+                }.get(payout_method, payout_method.title())
+
+                html_content = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        body {{
+                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                            line-height: 1.6;
+                            color: #333;
+                            max-width: 600px;
+                            margin: 0 auto;
+                            padding: 20px;
+                        }}
+                        .header {{
+                            background: linear-gradient(135deg, #22c55e, #16a34a);
+                            color: white;
+                            padding: 30px;
+                            border-radius: 10px 10px 0 0;
+                            text-align: center;
+                        }}
+                        .content {{
+                            background: #f8fafc;
+                            padding: 30px;
+                            border-radius: 0 0 10px 10px;
+                        }}
+                        .detail-box {{
+                            background: white;
+                            padding: 20px;
+                            margin: 15px 0;
+                            border-radius: 8px;
+                            border-left: 4px solid #22c55e;
+                        }}
+                        .label {{
+                            font-weight: 600;
+                            color: #64748b;
+                            margin-bottom: 5px;
+                        }}
+                        .value {{
+                            color: #1e293b;
+                            margin-bottom: 15px;
+                        }}
+                        .payout-box {{
+                            background: #f0fdf4;
+                            padding: 15px;
+                            border-radius: 8px;
+                            border-left: 4px solid #22c55e;
+                            margin: 15px 0;
+                        }}
+                        .button {{
+                            display: inline-block;
+                            padding: 12px 30px;
+                            background: #22c55e;
+                            color: white;
+                            text-decoration: none;
+                            border-radius: 8px;
+                            margin-top: 20px;
+                            font-weight: 600;
+                        }}
+                        .amount {{
+                            font-size: 24px;
+                            font-weight: 700;
+                            color: #22c55e;
+                            margin: 10px 0;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="header">
+                        <h1 style="margin: 0; font-size: 24px;">💰 Payout Method Confirmed</h1>
+                        <p style="margin: 10px 0 0 0; opacity: 0.9;">Ready for admin processing</p>
+                    </div>
+
+                    <div class="content">
+                        <div class="detail-box">
+                            <div class="label">Project:</div>
+                            <div class="value"><strong>{project.title if project else 'N/A'}</strong></div>
+
+                            <div class="label">Developer:</div>
+                            <div class="value">{developer.name} ({developer.email})</div>
+
+                            <div class="label">Investor:</div>
+                            <div class="value">{investor.name if investor else 'N/A'} ({investor.email if investor else 'N/A'})</div>
+
+                            <div class="label">Payout Amount:</div>
+                            <div class="amount">${payout.amount:,.2f}</div>
+
+                            <div class="label">Payout Status:</div>
+                            <div class="value"><strong>{payout.status.upper()}</strong></div>
+                        </div>
+
+                        <div class="payout-box">
+                            <div class="label">Payout Method:</div>
+                            <div class="value"><strong>{payout_method_display}</strong></div>
+
+                            <div class="label">Payout Email/Account:</div>
+                            <div class="value">{payout_email or 'Not provided'}</div>
+
+                            {f'<div class="label">Currency:</div><div class="value">{payout_currency}</div>' if payout_currency else ''}
+                        </div>
+
+                        <p style="color: #64748b; margin-top: 20px;">
+                            The developer has confirmed their payout method. Please process this payout in the admin panel.
+                        </p>
+
+                        <a href="https://bite-bids.vercel.app/admin/payouts" class="button">
+                            Process Payout
+                        </a>
+                    </div>
+                </body>
+                </html>
+                """
+
+                # Send email asynchronously (don't block the response)
+                await send_email(admin_email, subject, html_content)
+                logger.info(f"📧 Payout confirmation email sent to admin")
+
+            except Exception as email_error:
+                logger.error(f"Failed to send payout confirmation email: {email_error}")
+                # Don't fail the request if email fails
 
         return {
             "success": True,
