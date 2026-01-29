@@ -4154,13 +4154,19 @@ async def download_github_repo(
         # 11. Stream the response back
         logger.info(f"✅ Serving download: {filename} for user {user_id}")
 
+        # Build headers - only include Content-Length if available and valid
+        response_headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+
+        content_length = response.headers.get('Content-Length')
+        if content_length and content_length.strip():
+            response_headers["Content-Length"] = content_length
+
         return StreamingResponse(
             iter(response.iter_content(chunk_size=8192)),
             media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length": response.headers.get('Content-Length', ''),
-            }
+            headers=response_headers
         )
 
     except HTTPException:
