@@ -2,7 +2,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Form, Request, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import Response, HTMLResponse, RedirectResponse
+from fastapi.responses import Response, HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 import os
@@ -54,7 +54,7 @@ import asyncio
 import os
 import aiofiles
 from fastapi import UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 import mimetypes
 
 import requests
@@ -4029,6 +4029,146 @@ async def get_file_content(
     except Exception as e:
         logger.error(f"Error fetching file content: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/github/download-repo/{room_id}")
+async def download_github_repo(
+    room_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download GitHub repository as ZIP file
+    - Only accessible after project is confirmed (completed status)
+    - Supports private repositories using stored access tokens
+    - Admin can access any repository
+    """
+    try:
+        user_role = current_user.get("role", "")
+        user_id = uuid.UUID(current_user["id"])
+        room_uuid = uuid.UUID(room_id)
+
+        # 1. Get the chat room
+        room_query = select(ChatRoom).where(ChatRoom.id == room_uuid)
+        room_result = await db.execute(room_query)
+        room = room_result.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # 2. Authorization check (admin bypass)
+        if user_role != "admin":
+            if user_id not in [room.developer_id, room.investor_id]:
+                raise HTTPException(status_code=403, detail="Access denied to this chat room")
+
+        # 3. Get the project and check status
+        project_query = select(Project).where(Project.id == room.project_id)
+        project_result = await db.execute(project_query)
+        project = project_result.scalar_one_or_none()
+
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # 4. Check if project is completed (investor confirmed)
+        # Allow download for completed, fixed_price (after at least one confirmation), or admin
+        is_investor = user_id == room.investor_id
+
+        if user_role != "admin":
+            # Check if there's a completed payout for this investor
+            payout_query = select(DeveloperPayout).where(
+                DeveloperPayout.project_id == project.id,
+                DeveloperPayout.investor_id == user_id
+            )
+            payout_result = await db.execute(payout_query)
+            payout = payout_result.scalar_one_or_none()
+
+            if is_investor and not payout:
+                raise HTTPException(
+                    status_code=403,
+                    detail="You must confirm the project before downloading. Please click 'Confirm' first."
+                )
+
+        # 5. Get GitHub repo for this room
+        repo_query = select(ProjectGithubRepo).where(ProjectGithubRepo.room_id == room_uuid)
+        repo_result = await db.execute(repo_query)
+        repo_record = repo_result.scalar_one_or_none()
+
+        if not repo_record or not repo_record.repo_url:
+            raise HTTPException(status_code=404, detail="No GitHub repository found for this project")
+
+        # 6. Parse GitHub URL
+        try:
+            parsed = parse_github_url(repo_record.repo_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid GitHub URL: {str(e)}")
+
+        owner = parsed['owner']
+        repo = parsed['repo']
+
+        # 7. Prepare headers for GitHub API
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "BiteBids-Platform"
+        }
+
+        # Add auth token if available (for private repos)
+        if repo_record.encrypted_access_token:
+            try:
+                token = decrypt_token(repo_record.encrypted_access_token)
+                headers["Authorization"] = f"Bearer {token}"
+            except Exception as e:
+                logger.error(f"Failed to decrypt token: {e}")
+
+        # 8. Get default branch first
+        branch = "main"
+        try:
+            repo_info_url = f"https://api.github.com/repos/{owner}/{repo}"
+            repo_response = requests.get(repo_info_url, headers=headers, timeout=10)
+            if repo_response.status_code == 200:
+                repo_info = repo_response.json()
+                branch = repo_info.get("default_branch", "main")
+        except Exception as e:
+            logger.warning(f"Could not get default branch, using 'main': {e}")
+
+        # 9. Download ZIP from GitHub
+        zip_url = f"https://api.github.com/repos/{owner}/{repo}/zipball/{branch}"
+
+        logger.info(f"📦 Downloading repo ZIP: {owner}/{repo} branch:{branch} for user:{user_id}")
+
+        response = requests.get(zip_url, headers=headers, stream=True, timeout=60)
+
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Repository not found or access denied")
+        elif response.status_code == 401:
+            raise HTTPException(status_code=401, detail="Authentication required for this private repository")
+        elif response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=f"GitHub API error: {response.text}")
+
+        # 10. Get filename from Content-Disposition header or generate one
+        content_disposition = response.headers.get('Content-Disposition', '')
+        if 'filename=' in content_disposition:
+            filename = content_disposition.split('filename=')[-1].strip('"')
+        else:
+            filename = f"{repo}-{branch}.zip"
+
+        # 11. Stream the response back
+        logger.info(f"✅ Serving download: {filename} for user {user_id}")
+
+        return StreamingResponse(
+            iter(response.iter_content(chunk_size=8192)),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": response.headers.get('Content-Length', ''),
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading repository: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download repository: {str(e)}")
+
 
 # ============================================
 # WEBSOCKET ENDPOINTS
