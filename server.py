@@ -5563,6 +5563,7 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     user.email_verified = True
     user.verification_token = None
     user.status = "active"
+    user.verified = True  # Set user as verified when email is verified
 
     await db.commit()
 
@@ -6727,6 +6728,15 @@ async def get_developer_projects(
         )
         has_chat_room = chat_room_result.scalar() is not None
         project_dict["has_chat_room"] = has_chat_room
+
+        # Count active chat rooms for this project
+        active_rooms_result = await db.execute(
+            select(func.count(ChatRoom.id)).where(
+                ChatRoom.project_id == project.id,
+                ChatRoom.status == 'active'
+            )
+        )
+        project_dict["active_rooms_count"] = active_rooms_result.scalar() or 0
 
         projects_with_chat_info.append(project_dict)
 
@@ -10119,21 +10129,22 @@ async def github_callback(code: str, request: Request, db: AsyncSession = Depend
             existing_user = result.scalar_one_or_none()
             
             if existing_user:
-                # Update last login
+                # Update last login and set verified for OAuth users
                 existing_user.last_login = datetime.utcnow()
+                existing_user.verified = True  # Set verified for users logging in via GitHub
                 await db.commit()
                 await db.refresh(existing_user)
-                
+
                 user_dict = model_to_dict(existing_user)
                 token = create_jwt_token(user_dict)
-                
+
                 user_info = {
                     "id": str(existing_user.id),
                     "email": existing_user.email,
                     "name": existing_user.name,
                     "role": existing_user.role
                 }
-                
+
                 # Role-based redirect
                 if existing_user.role == "investor":
                     redirect_page = "home"
@@ -10143,10 +10154,10 @@ async def github_callback(code: str, request: Request, db: AsyncSession = Depend
                     redirect_page = "dashboard-admin"
                 else:
                     redirect_page = "home"
-                
+
                 # Encode user info properly
                 encoded_user = urllib.parse.quote(json.dumps(user_info))
-                
+
                 # Redirect to FRONTEND_URL
                 return RedirectResponse(
                     url=f"{FRONTEND_URL}/{redirect_page}?token={token}&user={encoded_user}&auth=success"
@@ -10222,21 +10233,22 @@ async def google_callback(code: str, request: Request, db: AsyncSession = Depend
             existing_user = result.scalar_one_or_none()
             
             if existing_user:
-                # Update last login
+                # Update last login and set verified for OAuth users
                 existing_user.last_login = datetime.utcnow()
+                existing_user.verified = True  # Set verified for users logging in via Google
                 await db.commit()
                 await db.refresh(existing_user)
-                
+
                 user_dict = model_to_dict(existing_user)
                 token = create_jwt_token(user_dict)
-                
+
                 user_info = {
                     "id": str(existing_user.id),
                     "email": existing_user.email,
                     "name": existing_user.name,
                     "role": existing_user.role
                 }
-                
+
                 # Role-based redirect
                 if existing_user.role == "investor":
                     redirect_page = "home"
@@ -10246,10 +10258,10 @@ async def google_callback(code: str, request: Request, db: AsyncSession = Depend
                     redirect_page = "dashboard-admin"
                 else:
                     redirect_page = "home"
-                
+
                 # Encode user info properly
                 encoded_user = urllib.parse.quote(json.dumps(user_info))
-                
+
                 # Redirect to FRONTEND_URL
                 return RedirectResponse(
                     url=f"{FRONTEND_URL}/{redirect_page}?token={token}&user={encoded_user}&auth=success"
@@ -10324,6 +10336,7 @@ async def complete_oauth_registration(request: dict, db: AsyncSession = Depends(
             password_hash=password_hash,
             role=selected_role,
             email_verified=True,
+            verified=True,  # OAuth users are automatically verified
             status="active",
             company=company,
             oauth_provider=provider,
