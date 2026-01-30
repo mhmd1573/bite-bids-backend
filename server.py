@@ -10443,16 +10443,21 @@ async def admin_dashboard(admin = Depends(get_admin_user), db: AsyncSession = De
         # Project statistics
         total_projects_result = await db.execute(select(func.count(Project.id)))
         total_projects = total_projects_result.scalar()
-        
-        active_projects_result = await db.execute(select(func.count(Project.id)).where(Project.status == "open"))
+
+        # Active projects = any status except "closed"
+        active_projects_result = await db.execute(select(func.count(Project.id)).where(Project.status != "closed"))
         active_projects = active_projects_result.scalar()
-        
-        # Auction statistics
-        total_auctions_result = await db.execute(select(func.count(Auction.id)))
-        total_auctions = total_auctions_result.scalar()
-        
-        active_auctions_result = await db.execute(select(func.count(Auction.id)).where(Auction.status == "active"))
-        active_auctions = active_auctions_result.scalar()
+
+        # Disputes statistics (from project_disputes_simple table)
+        total_disputes_result = await db.execute(select(func.count(ProjectDisputeSimple.id)))
+        total_disputes = total_disputes_result.scalar()
+
+        active_disputes_result = await db.execute(select(func.count(ProjectDisputeSimple.id)).where(ProjectDisputeSimple.resolved == False))
+        active_disputes = active_disputes_result.scalar()
+
+        # Total revenue from users total_earnings
+        total_revenue_result = await db.execute(select(func.coalesce(func.sum(User.total_earnings), 0)))
+        total_revenue = float(total_revenue_result.scalar() or 0)
         
         # Recent activity
         recent_users_result = await db.execute(
@@ -10476,12 +10481,12 @@ async def admin_dashboard(admin = Depends(get_admin_user), db: AsyncSession = De
                     "total": total_projects,
                     "active": active_projects
                 },
-                "auctions": {
-                    "total": total_auctions,
-                    "active": active_auctions
+                "disputes": {
+                    "total": total_disputes,
+                    "active": active_disputes
                 },
                 "payments": {
-                    "total_revenue": 12450.00,
+                    "total_revenue": total_revenue,
                     "pending_payments": 3,
                     "completed_transactions": 47
                 }
