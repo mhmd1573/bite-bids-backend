@@ -4130,12 +4130,14 @@ async def download_github_repo(
         except Exception as e:
             logger.warning(f"Could not get default branch, using 'main': {e}")
 
-        # 9. Download ZIP from GitHub
-        zip_url = f"https://api.github.com/repos/{owner}/{repo}/zipball/{branch}"
+        # 9. Download ZIP from GitHub (using codeload for faster direct download)
+        # codeload.github.com is GitHub's CDN - typically 2-3x faster than api.github.com
+        zip_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{branch}"
 
         logger.info(f"📦 Downloading repo ZIP: {owner}/{repo} branch:{branch} for user:{user_id}")
 
-        response = requests.get(zip_url, headers=headers, stream=True, timeout=60)
+        # Use longer timeout for large repos (3 minutes)
+        response = requests.get(zip_url, headers=headers, stream=True, timeout=180)
 
         if response.status_code == 404:
             raise HTTPException(status_code=404, detail="Repository not found or access denied")
@@ -4164,7 +4166,7 @@ async def download_github_repo(
             response_headers["Content-Length"] = content_length
 
         return StreamingResponse(
-            iter(response.iter_content(chunk_size=8192)),
+            iter(response.iter_content(chunk_size=65536)),  # 64KB chunks for faster transfer
             media_type="application/zip",
             headers=response_headers
         )
