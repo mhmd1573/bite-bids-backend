@@ -67,6 +67,8 @@ import base64
 from PIL import Image
 from io import BytesIO
 from cryptography.fernet import Fernet
+import boto3
+from botocore.config import Config
 
 # Load environment variables
 load_dotenv()
@@ -128,7 +130,28 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
 stripe.api_key = STRIPE_SECRET_KEY
 
-                                          
+# ============================================
+# CLOUDFLARE R2 CONFIGURATION
+# ============================================
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "bitebids-projects")
+
+# Initialize R2 client (S3-compatible)
+r2_client = None
+if R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY:
+    r2_client = boto3.client(
+        's3',
+        endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=Config(signature_version='s3v4'),
+        region_name='auto'
+    )
+    logger.info("✅ Cloudflare R2 client initialized")
+else:
+    logger.warning("⚠️ Cloudflare R2 credentials not configured")
 
 # Create async engine
 engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
@@ -704,6 +727,34 @@ class ProjectGithubRepo(Base):
     
     __table_args__ = (
         Index('idx_github_repo_room', 'room_id'),
+    )
+
+
+class ProjectUpload(Base):
+    """Store direct project uploads to R2 cloud storage"""
+    __tablename__ = "project_uploads"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    room_id = Column(UUID(as_uuid=True), ForeignKey("chat_rooms.id", ondelete='CASCADE'), unique=True, nullable=False)
+
+    # Upload info
+    file_key = Column(String(500), nullable=False)  # R2 object key
+    file_name = Column(String(255), nullable=False)  # Original filename
+    file_size = Column(Integer, nullable=False)  # Size in bytes
+
+    # File tree structure (JSON)
+    file_tree = Column(JSONB, nullable=False)  # Folder structure for preview
+
+    # Uploader info
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    uploaded_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    # Status
+    status = Column(String(50), default='pending')  # pending, confirmed, downloaded
+
+    __table_args__ = (
+        Index('idx_project_upload_room', 'room_id'),
+        CheckConstraint("status IN ('pending', 'confirmed', 'downloaded')"),
     )
 
 
@@ -4176,6 +4227,309 @@ async def download_github_repo(
     except Exception as e:
         logger.error(f"Error downloading repository: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to download repository: {str(e)}")
+
+
+# ============================================
+# PROJECT UPLOAD (R2 CLOUD STORAGE) ENDPOINTS
+# ============================================
+
+@app.post("/api/upload/presigned-url/{room_id}")
+async def get_upload_presigned_url(
+    room_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate a presigned URL for direct upload to R2
+    - Only developers can upload
+    - Returns presigned URL valid for 1 hour
+    """
+    try:
+        if not r2_client:
+            raise HTTPException(status_code=503, detail="Cloud storage not configured")
+
+        user_id = uuid.UUID(current_user["id"])
+        room_uuid = uuid.UUID(room_id)
+
+        # Get chat room
+        room_query = select(ChatRoom).where(ChatRoom.id == room_uuid)
+        room_result = await db.execute(room_query)
+        room = room_result.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # Only developer can upload
+        if user_id != room.developer_id:
+            raise HTTPException(status_code=403, detail="Only the developer can upload project files")
+
+        # Check if there's already a GitHub repo or upload for this room
+        github_query = select(ProjectGithubRepo).where(ProjectGithubRepo.room_id == room_uuid)
+        github_result = await db.execute(github_query)
+        existing_github = github_result.scalar_one_or_none()
+
+        if existing_github:
+            raise HTTPException(status_code=400, detail="A GitHub repository has already been submitted for this project")
+
+        # Get request body
+        body = await request.json()
+        file_name = body.get("file_name", "project.zip")
+        file_size = body.get("file_size", 0)
+        content_type = body.get("content_type", "application/zip")
+
+        # Validate file size (max 5GB)
+        max_size = 5 * 1024 * 1024 * 1024  # 5GB
+        if file_size > max_size:
+            raise HTTPException(status_code=400, detail="File size exceeds 5GB limit")
+
+        # Generate unique file key
+        file_key = f"projects/{room_id}/{uuid.uuid4()}/{file_name}"
+
+        # Generate presigned URL for upload (valid for 1 hour)
+        presigned_url = r2_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': R2_BUCKET_NAME,
+                'Key': file_key,
+                'ContentType': content_type,
+            },
+            ExpiresIn=3600  # 1 hour
+        )
+
+        logger.info(f"📤 Generated upload URL for room {room_id} by user {user_id}")
+
+        return {
+            "presigned_url": presigned_url,
+            "file_key": file_key,
+            "expires_in": 3600
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating upload URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/upload/complete/{room_id}")
+async def complete_upload(
+    room_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Complete the upload process by saving file tree metadata
+    - Called after file is uploaded to R2
+    - Saves file tree structure for investor preview
+    """
+    try:
+        user_id = uuid.UUID(current_user["id"])
+        room_uuid = uuid.UUID(room_id)
+
+        # Get chat room
+        room_query = select(ChatRoom).where(ChatRoom.id == room_uuid)
+        room_result = await db.execute(room_query)
+        room = room_result.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # Only developer can complete upload
+        if user_id != room.developer_id:
+            raise HTTPException(status_code=403, detail="Only the developer can upload project files")
+
+        body = await request.json()
+        file_key = body.get("file_key")
+        file_name = body.get("file_name")
+        file_size = body.get("file_size")
+        file_tree = body.get("file_tree")
+
+        if not all([file_key, file_name, file_tree]):
+            raise HTTPException(status_code=400, detail="Missing required fields")
+
+        # Check if upload already exists for this room
+        existing_query = select(ProjectUpload).where(ProjectUpload.room_id == room_uuid)
+        existing_result = await db.execute(existing_query)
+        existing = existing_result.scalar_one_or_none()
+
+        if existing:
+            # Update existing upload
+            existing.file_key = file_key
+            existing.file_name = file_name
+            existing.file_size = file_size
+            existing.file_tree = file_tree
+            existing.uploaded_at = datetime.utcnow()
+        else:
+            # Create new upload record
+            upload = ProjectUpload(
+                room_id=room_uuid,
+                file_key=file_key,
+                file_name=file_name,
+                file_size=file_size,
+                file_tree=file_tree,
+                uploaded_by=user_id,
+                status='pending'
+            )
+            db.add(upload)
+
+        await db.commit()
+
+        logger.info(f"✅ Upload completed for room {room_id} by user {user_id}")
+
+        return {
+            "success": True,
+            "message": "Project uploaded successfully",
+            "file_name": file_name,
+            "file_size": file_size
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing upload: {e}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/upload/info/{room_id}")
+async def get_upload_info(
+    room_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get upload information including file tree for preview
+    - Both developer and investor can view
+    """
+    try:
+        user_id = uuid.UUID(current_user["id"])
+        user_role = current_user.get("role", "")
+        room_uuid = uuid.UUID(room_id)
+
+        # Get chat room
+        room_query = select(ChatRoom).where(ChatRoom.id == room_uuid)
+        room_result = await db.execute(room_query)
+        room = room_result.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # Authorization check
+        if user_role != "admin" and user_id not in [room.developer_id, room.investor_id]:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get upload record
+        upload_query = select(ProjectUpload).where(ProjectUpload.room_id == room_uuid)
+        upload_result = await db.execute(upload_query)
+        upload = upload_result.scalar_one_or_none()
+
+        if not upload:
+            return {"upload": None}
+
+        return {
+            "upload": {
+                "id": str(upload.id),
+                "file_name": upload.file_name,
+                "file_size": upload.file_size,
+                "file_tree": upload.file_tree,
+                "uploaded_at": upload.uploaded_at.isoformat() if upload.uploaded_at else None,
+                "status": upload.status
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting upload info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/upload/download-url/{room_id}")
+async def get_download_presigned_url(
+    room_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate a presigned URL for downloading from R2
+    - Only accessible after project is confirmed
+    """
+    try:
+        if not r2_client:
+            raise HTTPException(status_code=503, detail="Cloud storage not configured")
+
+        user_id = uuid.UUID(current_user["id"])
+        user_role = current_user.get("role", "")
+        room_uuid = uuid.UUID(room_id)
+
+        # Get chat room
+        room_query = select(ChatRoom).where(ChatRoom.id == room_uuid)
+        room_result = await db.execute(room_query)
+        room = room_result.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # Authorization check
+        if user_role != "admin" and user_id not in [room.developer_id, room.investor_id]:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Check if project is confirmed (for investor)
+        is_investor = user_id == room.investor_id
+
+        if user_role != "admin" and is_investor:
+            # Check for completed payout
+            payout_query = select(DeveloperPayout).where(
+                DeveloperPayout.project_id == room.project_id,
+                DeveloperPayout.investor_id == user_id
+            )
+            payout_result = await db.execute(payout_query)
+            payout = payout_result.scalar_one_or_none()
+
+            if not payout:
+                raise HTTPException(
+                    status_code=403,
+                    detail="You must confirm the project before downloading"
+                )
+
+        # Get upload record
+        upload_query = select(ProjectUpload).where(ProjectUpload.room_id == room_uuid)
+        upload_result = await db.execute(upload_query)
+        upload = upload_result.scalar_one_or_none()
+
+        if not upload:
+            raise HTTPException(status_code=404, detail="No uploaded project found")
+
+        # Generate presigned download URL (valid for 1 hour)
+        presigned_url = r2_client.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': R2_BUCKET_NAME,
+                'Key': upload.file_key,
+            },
+            ExpiresIn=3600  # 1 hour
+        )
+
+        # Update status
+        upload.status = 'downloaded'
+        await db.commit()
+
+        logger.info(f"📥 Generated download URL for room {room_id} by user {user_id}")
+
+        return {
+            "download_url": presigned_url,
+            "file_name": upload.file_name,
+            "file_size": upload.file_size,
+            "expires_in": 3600
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating download URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================
