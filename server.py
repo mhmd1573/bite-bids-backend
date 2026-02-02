@@ -4264,13 +4264,13 @@ async def get_upload_presigned_url(
         if user_id != room.developer_id:
             raise HTTPException(status_code=403, detail="Only the developer can upload project files")
 
-        # Check if there's already a GitHub repo or upload for this room
-        github_query = select(ProjectGithubRepo).where(ProjectGithubRepo.room_id == room_uuid)
-        github_result = await db.execute(github_query)
-        existing_github = github_result.scalar_one_or_none()
+        # Check if there's already an upload for this room (allow re-upload to replace)
+        existing_upload_query = select(ProjectUpload).where(ProjectUpload.room_id == room_uuid)
+        existing_upload_result = await db.execute(existing_upload_query)
+        existing_upload = existing_upload_result.scalar_one_or_none()
 
-        if existing_github:
-            raise HTTPException(status_code=400, detail="A GitHub repository has already been submitted for this project")
+        if existing_upload:
+            logger.info(f"📦 Replacing existing upload for room {room_id}")
 
         # Get request body
         body = await request.json()
