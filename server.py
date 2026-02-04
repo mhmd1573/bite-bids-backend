@@ -2403,8 +2403,8 @@ async def send_admin_project_notification(
         
         config = action_config.get(action, action_config["created"])
         
-        # Admin dashboard link
-        admin_link = f"{FRONTEND_URL}/admin-dashboard?project={project_id}"
+        # Admin dashboard link (correct route is /dashboard-admin)
+        admin_link = f"{FRONTEND_URL}/dashboard-admin"
         
         subject = f"{config['emoji']} {config['title']} - {project_title}"
         
@@ -8712,7 +8712,7 @@ async def create_project_dispute(
                         Please review this dispute and take appropriate action in the admin panel.
                     </p>
 
-                    <a href="https://bite-bids.vercel.app/admin/disputes" class="button">
+                    <a href="{FRONTEND_URL}/dashboard-admin?tab=disputes" class="button">
                         Review Dispute
                     </a>
                 </div>
@@ -9629,7 +9629,7 @@ async def confirm_payout_method_for_chat(
                             The developer has confirmed their payout method. Please process this payout in the admin panel.
                         </p>
 
-                        <a href="https://bite-bids.vercel.app/admin/payouts" class="button">
+                        <a href="{FRONTEND_URL}/admin/payouts" class="button">
                             Process Payout
                         </a>
                     </div>
