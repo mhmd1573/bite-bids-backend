@@ -10843,8 +10843,8 @@ async def admin_dashboard(admin = Depends(get_admin_user), db: AsyncSession = De
                 },
                 "payments": {
                     "total_revenue": total_revenue,
-                    "pending_payments": 3,
-                    "completed_transactions": 47
+                    "pending_payments": 0,
+                    "completed_transactions": 0
                 }
             },
             "recent_activity": {
