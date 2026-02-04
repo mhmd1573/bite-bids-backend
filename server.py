@@ -32,7 +32,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import Column, String, Integer, Boolean, DECIMAL, TIMESTAMP, Text, ARRAY, ForeignKey, CheckConstraint, UniqueConstraint, Index
 from sqlalchemy import select, func, and_, or_, update, delete
-from sqlalchemy.dialects.postgresql import UUID, JSONB, INET
+from sqlalchemy.dialects.postgresql import UUID, JSONB  # REMOVED: INET (was used by ActivityLog)
 from sqlalchemy.sql import func as sql_func
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import joinedload
@@ -252,7 +252,7 @@ class Project(Base):
     description = Column(Text, nullable=False)
     tech_stack = Column(ARRAY(Text), nullable=False)
     requirements = Column(Text, nullable=False)
-    budget_range = Column(String(100))
+    # REMOVED: budget_range - not used (only budget is used)
     budget = Column(DECIMAL(12,2), nullable=False)
     deadline = Column(TIMESTAMP)
 
@@ -294,24 +294,11 @@ class Project(Base):
 
     images = Column(ARRAY(String), default=[])
 
-        # ✅ ADD THESE THREE LINES FOR PROJECT REVIEW FEATURE
-    project_files_path = Column(String(500))  # Path to extracted .rar files
-    project_files_uploaded_at = Column(TIMESTAMP)  # When developer uploaded files
-    review_button_enabled_until = Column(TIMESTAMP)  # 24-hour window expires at this time
+    # REMOVED: project_files_path, project_files_uploaded_at, review_button_enabled_until
+    # (replaced by R2 cloud storage via project_uploads table)
 
-    delivery_type = Column(String(20), default="upload")  
-    # values: "git" | "upload"
-
-    delivery_repo_url = Column(String(500))
-    delivery_repo_branch = Column(String(100), default="main")
-    delivery_repo_commit = Column(String(100))
-    delivery_submitted_at = Column(TIMESTAMP)
-
-
-class GitDeliveryRequest(BaseModel):
-    repo_url: str
-    branch: str = "main"
-    commit: str | None = None
+    # REMOVED: delivery_type, delivery_repo_url, delivery_repo_branch, delivery_repo_commit, delivery_submitted_at
+    # (replaced by project_github_repos table)
 
 
 class Bid(Base):
@@ -340,61 +327,7 @@ class Bid(Base):
     )
 
 
-class Auction(Base):
-    __tablename__ = 'auctions'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    title = Column(String(500), nullable=False)
-    description = Column(Text, nullable=False)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
-    
-    # Auction details
-    starting_bid = Column(DECIMAL(12,2), nullable=False)
-    current_bid = Column(DECIMAL(12,2))
-    minimum_increment = Column(DECIMAL(12,2), default=100)
-    reserve_price = Column(DECIMAL(12,2))
-    
-    # Timing
-    start_time = Column(TIMESTAMP, nullable=False, server_default=sql_func.now())
-    end_time = Column(TIMESTAMP, nullable=False, index=True)
-    duration_days = Column(Integer, nullable=False)
-    
-    # Status
-    status = Column(String(50), default='active', index=True)
-    is_hot = Column(Boolean, default=False)
-    
-    # Engagement
-    bids_count = Column(Integer, default=0)
-    highest_bidder_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
-    watchers_count = Column(Integer, default=0)
-    views = Column(Integer, default=0)
-    
-    # Category
-    category = Column(String(100), index=True)
-    tags = Column(ARRAY(Text))
-    
-    # Timestamps
-    created_at = Column(TIMESTAMP, server_default=sql_func.now())
-    updated_at = Column(TIMESTAMP, server_default=sql_func.now(), onupdate=sql_func.now())
-    sold_at = Column(TIMESTAMP)
-    
-    __table_args__ = (
-        CheckConstraint("status IN ('active', 'ended', 'cancelled', 'sold')"),
-    )
-
-
-class AuctionBid(Base):
-    __tablename__ = 'auction_bids'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    auction_id = Column(UUID(as_uuid=True), ForeignKey('auctions.id', ondelete='CASCADE'), nullable=False, index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
-    amount = Column(DECIMAL(12,2), nullable=False)
-    timestamp = Column(TIMESTAMP, server_default=sql_func.now(), index=True)
-    
-    __table_args__ = (
-        CheckConstraint("amount > 0"),
-    )
+## REMOVED: Auction and AuctionBid tables (unused - no endpoints, no frontend usage)
 
 
 class CheckoutSession(Base):
@@ -516,24 +449,7 @@ class Notification(Base):
     created_at = Column(TIMESTAMP, server_default=sql_func.now(), index=True)
 
 
-class ActivityLog(Base):
-    __tablename__ = 'activity_log'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), index=True)
-    user_name = Column(String(255))
-    
-    # Activity
-    type = Column(String(50), nullable=False, index=True)
-    action = Column(String(255), nullable=False)
-    details = Column(JSONB)
-    
-    # Metadata
-    ip_address = Column(INET)
-    user_agent = Column(Text)
-    
-    # Timestamp
-    created_at = Column(TIMESTAMP, server_default=sql_func.now(), index=True)
+## REMOVED: ActivityLog table (unused - not called from frontend)
 
 
 class ChatRoom(Base):
@@ -592,85 +508,9 @@ class ChatMessage(Base):
     )
 
 
-class ProjectDelivery(Base):
-    """Track project deliveries and verification status"""
-    __tablename__ = 'project_deliveries'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
-    chat_room_id = Column(UUID(as_uuid=True), ForeignKey('chat_rooms.id', ondelete='CASCADE'), nullable=False)
-    
-    # Parties involved
-    developer_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    investor_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    
-    # Delivery details
-    delivery_url = Column(String(500))
-    delivery_notes = Column(Text)
-    delivery_files = Column(JSONB)
-    
-    # Status tracking
-    status = Column(String(50), default='pending', index=True)
-    
-    submitted_at = Column(TIMESTAMP)
-    reviewed_at = Column(TIMESTAMP)
-    approved_at = Column(TIMESTAMP)
-    disputed_at = Column(TIMESTAMP)
-    resolved_at = Column(TIMESTAMP)
-    
-    # Dispute information
-    dispute_reason = Column(Text)
-    dispute_notes = Column(Text)
-    dispute_evidence = Column(JSONB)
-    
-    # Admin resolution
-    admin_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
-    admin_notes = Column(Text)
-    resolution = Column(String(50))
-    
-    # Payment information
-    project_amount = Column(DECIMAL(12,2), nullable=False)
-    platform_commission_rate = Column(DECIMAL(5,2), default=6.00)
-    platform_commission = Column(DECIMAL(12,2))
-    developer_payout = Column(DECIMAL(12,2))
-    
-    payment_released = Column(Boolean, default=False)
-    payment_released_at = Column(TIMESTAMP)
-    
-    created_at = Column(TIMESTAMP, server_default=sql_func.now())
-    updated_at = Column(TIMESTAMP, server_default=sql_func.now(), onupdate=sql_func.now())
-    
-    __table_args__ = (
-        CheckConstraint("status IN ('pending', 'submitted', 'under_review', 'approved', 'disputed', 'resolved', 'cancelled')"),
-        CheckConstraint("resolution IN ('approve_developer', 'approve_investor', 'partial_refund', 'full_refund', 'custom')"),
-    )
-
-
-class DisputeMessage(Base):
-    """Messages during dispute resolution"""
-    __tablename__ = 'dispute_messages'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    delivery_id = Column(UUID(as_uuid=True), ForeignKey('project_deliveries.id', ondelete='CASCADE'), nullable=False, index=True)
-    sender_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    message = Column(Text, nullable=False)
-    attachments = Column(JSONB)
-    
-    created_at = Column(TIMESTAMP, server_default=sql_func.now())
-
-
-class ContentFilterLog(Base):
-    """Log filtered messages for review"""
-    __tablename__ = 'content_filter_logs'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    chat_room_id = Column(UUID(as_uuid=True), ForeignKey('chat_rooms.id', ondelete='CASCADE'), index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), index=True)
-    original_message = Column(Text, nullable=False)
-    filtered_content = Column(ARRAY(Text))
-    action_taken = Column(String(50))
-    
-    created_at = Column(TIMESTAMP, server_default=sql_func.now())
+## REMOVED: ProjectDelivery table (replaced by simpler project_disputes_simple approach)
+## REMOVED: DisputeMessage table (related to project_deliveries - not used)
+## REMOVED: ContentFilterLog table (endpoint exists but never called from frontend)
 
 
 class ProjectDisputeSimple(Base):
@@ -697,21 +537,9 @@ class ProjectDisputeSimple(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-# Add this new model for tracking file access
-class ProjectFileAccess(Base):
-    __tablename__ = 'project_file_access'
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='CASCADE'), nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    file_path = Column(String(1000), nullable=False)
-    accessed_at = Column(TIMESTAMP, server_default=sql_func.now())
-    
-    __table_args__ = (
-        Index('idx_project_file_access', 'project_id', 'user_id'),
-    )
+## REMOVED: ProjectFileAccess table (unused - not called from frontend)
 
-    
+
 class ProjectGithubRepo(Base):
     __tablename__ = "project_github_repos"
     
@@ -4648,18 +4476,8 @@ async def websocket_chat(websocket: WebSocket, room_id: str, user_id: str):
                         "detail": "Please do not share phone numbers, emails, or social media. All communication must happen through BiteBids."
                     }))
                     
-                    # Log violation
-                    async with async_session_maker() as db:
-                        log_entry = ContentFilterLog(
-                            chat_room_id=uuid.UUID(room_id),
-                            user_id=uuid.UUID(user_id),
-                            original_message=message_text,
-                            filtered_content=[v['type'] for v in filter_result['violations']],
-                            action_taken='blocked'
-                        )
-                        db.add(log_entry)
-                        await db.commit()
-                    
+                    # REMOVED: ContentFilterLog logging (table removed)
+                    logger.warning(f"Message blocked for user {user_id}: {[v['type'] for v in filter_result['violations']]}")
                     return  # Don't process message further
                 
                 # Message is safe - handle incoming chat message
@@ -4976,18 +4794,8 @@ async def moderate_message_async(message_id: str, message_text: str, room_id: st
 
                 message.moderation_reason = reason
 
-                # Log the violation
-                try:
-                    log_entry = ContentFilterLog(
-                        chat_room_id=uuid.UUID(room_id),
-                        user_id=uuid.UUID(sender_id),
-                        original_message=message_text,
-                        filtered_content=[reason],
-                        action_taken='flagged'
-                    )
-                    db.add(log_entry)
-                except Exception as log_error:
-                    logger.error(f"Failed to log violation: {log_error}")
+                # REMOVED: ContentFilterLog logging (table removed)
+                logger.warning(f"Message flagged for user {sender_id}: {reason}")
 
                 await db.commit()
 
@@ -8328,27 +8136,8 @@ async def simple_approve_project(
         except Exception as e:
             logger.error(f"Failed to queue approval email: {e}")
         
-        # Log activity
-        try:
-            activity = ActivityLog(
-                user_id=current_user['id'],
-                user_name=current_user['name'],
-                type='project_approval',
-                action='project_approved',
-                details={
-                    'project_id': str(project.id),
-                    'project_title': project.title,
-                    'developer_id': str(project.developer_id),
-                    'amount': float(project_amount),
-                    'payout': float(developer_payout)
-                }
-            )
-            db.add(activity)
-            await db.commit()
-        except Exception as e:
-            logger.error(f"Failed to log activity: {e}")
-        
-        logger.info(f"✅ Project {project_id} approved successfully")
+        # REMOVED: ActivityLog logging (table removed)
+        logger.info(f"✅ Project {project_id} approved successfully by {current_user['name']}")
         
         return {
             "success": True,
@@ -9663,112 +9452,10 @@ async def confirm_payout_method_for_chat(
 # ADMIN DISPUTE ENDPOINTS
 # ============================================
 
-@app.get("/api/admin/disputes")
-async def get_all_disputes(
-    status: Optional[str] = None,
-    admin: User = Depends(get_current_admin)
-):
-    """Get all disputes for admin review"""
-    async with async_session_maker() as db:
-        try:
-            query = select(ProjectDelivery).where(ProjectDelivery.status == 'disputed')
-            
-            if status:
-                query = query.where(ProjectDelivery.status == status)
-            
-            result = await db.execute(query.order_by(ProjectDelivery.disputed_at.desc()))
-            deliveries = result.scalars().all()
-            
-            disputes = []
-            for delivery in deliveries:
-                # Get project details
-                project_query = await db.execute(
-                    select(Project).where(Project.id == delivery.project_id)
-                )
-                project = project_query.scalar_one()
-                
-                # Get developer and investor
-                dev_query = await db.execute(
-                    select(User).where(User.id == delivery.developer_id)
-                )
-                developer = dev_query.scalar_one()
-                
-                inv_query = await db.execute(
-                    select(User).where(User.id == delivery.investor_id)
-                )
-                investor = inv_query.scalar_one()
-                
-                disputes.append({
-                    "id": str(delivery.id),
-                    "project": {
-                        "id": str(project.id),
-                        "title": project.title,
-                        "amount": float(delivery.project_amount)
-                    },
-                    "developer": {
-                        "id": str(developer.id),
-                        "name": developer.name,
-                        "email": developer.email
-                    },
-                    "investor": {
-                        "id": str(investor.id),
-                        "name": investor.name,
-                        "email": investor.email
-                    },
-                    "dispute_reason": delivery.dispute_reason,
-                    "dispute_notes": delivery.dispute_notes,
-                    "disputed_at": delivery.disputed_at.isoformat(),
-                    "delivery_url": delivery.delivery_url,
-                    "delivery_notes": delivery.delivery_notes,
-                    "platform_commission": float(delivery.platform_commission),
-                    "developer_payout": float(delivery.developer_payout)
-                })
-            
-            return {"disputes": disputes}
-            
-        except Exception as e:
-            logger.error(f"Error getting disputes: {e}")
-            raise HTTPException(status_code=500, detail="Failed to get disputes")
+## REMOVED: /api/admin/disputes endpoint (uses ProjectDelivery table which was removed)
+## Frontend uses /api/admin/disputes-simple instead
 
-
-@app.get("/api/admin/content-filter-logs")
-async def get_content_filter_logs(
-    limit: int = 50,
-    admin: User = Depends(get_current_admin)
-):
-    """Get content filter violation logs"""
-    async with async_session_maker() as db:
-        try:
-            query = select(ContentFilterLog).order_by(ContentFilterLog.created_at.desc()).limit(limit)
-            result = await db.execute(query)
-            logs = result.scalars().all()
-            
-            log_data = []
-            for log in logs:
-                user_query = await db.execute(
-                    select(User).where(User.id == log.user_id)
-                )
-                user = user_query.scalar_one()
-                
-                log_data.append({
-                    "id": str(log.id),
-                    "user": {
-                        "id": str(user.id),
-                        "name": user.name,
-                        "email": user.email
-                    },
-                    "room_id": str(log.chat_room_id),
-                    "original_message": log.original_message,
-                    "filtered_content": log.filtered_content,
-                    "action_taken": log.action_taken,
-                    "created_at": log.created_at.isoformat()
-                })
-            
-            return {"logs": log_data}
-            
-        except Exception as e:
-            logger.error(f"Error getting filter logs: {e}")
-            raise HTTPException(status_code=500, detail="Failed to get logs")
+## REMOVED: /api/admin/content-filter-logs endpoint (ContentFilterLog table removed, not used by frontend)
 
 
 # ============================================
@@ -11078,15 +10765,8 @@ async def admin_ban_user(
     user.updated_at = datetime.utcnow()
     db.add(user)
 
-    # Log action
-    log = ActivityLog(
-        user_id=user.id,
-        user_name=user.name,
-        type="admin_action",
-        action="user_banned",
-        details={"reason": data.reason or "No reason provided"},
-    )
-    db.add(log)
+    # REMOVED: ActivityLog logging (table removed)
+    logger.info(f"User {user.email} banned by admin. Reason: {data.reason or 'No reason provided'}")
 
     await db.commit()
 
