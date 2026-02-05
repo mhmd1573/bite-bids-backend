@@ -227,12 +227,11 @@ class User(Base):
     # ✅ ADD THIS LINE
     posting_credits = Column(Integer, default=0)
 
-    # ✅ Developer Payout Preferences
-    payout_method = Column(String(50), nullable=True)  # paypal, wise, bank_transfer, crypto, other
-    payout_email = Column(String(255), nullable=True)  # For PayPal, Wise
-    payout_details = Column(JSONB, nullable=True)  # Bank details, crypto wallet, etc.
-    payout_currency = Column(String(10), default='USD')  # Preferred currency
-    payout_verified = Column(Boolean, default=False)  # Admin verified payout info
+    # ✅ Stripe Connect (Automated Payouts)
+    stripe_account_id = Column(String(255), nullable=True, unique=True)  # Stripe Connect account ID (acct_xxx)
+    stripe_account_status = Column(String(50), nullable=True)  # pending, enabled, restricted, disabled
+    stripe_payouts_enabled = Column(Boolean, default=False)  # True when Stripe can send payouts
+    stripe_onboarding_completed = Column(Boolean, default=False)  # True when onboarding flow completed
 
     # Relationship
     projects = relationship("Project", back_populates="developer", foreign_keys="Project.developer_id")
@@ -390,10 +389,9 @@ class DeveloperPayout(Base):
     net_amount = Column(DECIMAL(12, 2), nullable=False)  # Amount to pay developer
     currency = Column(String(10), default='USD')
 
-    # Payout method (snapshot at time of payout request)
-    payout_method = Column(String(50), nullable=True)  # paypal, wise, bank_transfer, crypto
-    payout_email = Column(String(255), nullable=True)
-    payout_details = Column(JSONB, nullable=True)  # Bank details, wallet, etc.
+    # Stripe Connect Transfer
+    stripe_transfer_id = Column(String(255), nullable=True)  # Stripe transfer ID (tr_xxx)
+    stripe_transfer_status = Column(String(50), nullable=True)  # pending, paid, failed
 
     # Status tracking
     status = Column(String(50), default='pending', index=True)  # pending, processing, completed, failed, cancelled
@@ -8019,6 +8017,13 @@ async def simple_approve_project(
         )
         checkout_session = checkout_result.scalar_one_or_none()
 
+        # ✅ Check if developer has Stripe Connect enabled
+        if not developer.stripe_account_id or not developer.stripe_payouts_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Developer must set up Stripe Connect to receive payouts. Please ask them to complete their payout settings."
+            )
+
         # Create payout record
         payout_record = DeveloperPayout(
             developer_id=project.developer_id,
@@ -8029,13 +8034,38 @@ async def simple_approve_project(
             platform_fee=Decimal(str(platform_fee)),
             net_amount=Decimal(str(developer_payout)),
             currency='USD',
-            payout_method=developer.payout_method,
-            payout_email=developer.payout_email,
-            payout_details=developer.payout_details,
-            status='pending',
+            status='processing',
             description=f"Payment for project: {project.title}"
         )
         db.add(payout_record)
+        await db.flush()  # Get the payout ID
+
+        # ✅ Create Stripe Transfer to developer's connected account
+        try:
+            transfer = stripe.Transfer.create(
+                amount=int(developer_payout * 100),  # Convert to cents
+                currency="usd",
+                destination=developer.stripe_account_id,
+                metadata={
+                    'project_id': str(project.id),
+                    'project_title': project.title,
+                    'developer_id': str(developer.id),
+                    'payout_id': str(payout_record.id),
+                    'investor_id': str(user_uuid)
+                }
+            )
+            payout_record.stripe_transfer_id = transfer.id
+            payout_record.stripe_transfer_status = 'pending'
+            logger.info(f"✅ Stripe transfer {transfer.id} created for payout {payout_record.id}")
+        except stripe.error.StripeError as e:
+            logger.error(f"❌ Stripe transfer failed: {e}")
+            payout_record.status = 'failed'
+            payout_record.failure_reason = f"Stripe transfer failed: {str(e)}"
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to process payout: {str(e)}"
+            )
+
         logger.info(f"✅ Payout record created for developer {developer.email}: ${developer_payout:.2f}")
 
         # ✅ FIXED: Create proper notification for developer
@@ -8081,7 +8111,7 @@ async def simple_approve_project(
                            f"• Gross Amount: ${project_amount:.2f}\n" +
                            f"• Platform Fee (6%): ${platform_fee:.2f}\n" +
                            f"• Developer Payout: ${developer_payout:.2f}\n\n" +
-                           f"Payment is being processed and will be transferred to the developer's account.",
+                           f"💳 Payment has been automatically transferred via Stripe Connect.",
                     message_type='system',
                     created_at=datetime.utcnow()
                 )
@@ -9191,15 +9221,16 @@ async def get_pending_payout_for_chat(
                 "currency": payout.currency,
                 "status": payout.status,
                 "created_at": payout.created_at.isoformat() if payout.created_at else None,
-                "payout_method": payout.payout_method,
-                "payout_email": payout.payout_email
+                # Stripe Connect transfer details
+                "stripe_transfer_id": payout.stripe_transfer_id if hasattr(payout, 'stripe_transfer_id') else None,
+                "stripe_transfer_status": payout.stripe_transfer_status if hasattr(payout, 'stripe_transfer_status') else None
             },
-            "developer_preferences": {
-                "payout_method": developer.payout_method if developer else None,
-                "payout_email": developer.payout_email if developer else None,
-                "payout_currency": developer.payout_currency if developer else 'USD',
-                "payout_verified": developer.payout_verified if developer else False,
-                "has_payout_method": bool(developer and developer.payout_method)
+            # Stripe Connect status (replaces old payout method preferences)
+            "stripe_connect": {
+                "account_id": developer.stripe_account_id if developer else None,
+                "payouts_enabled": developer.stripe_payouts_enabled if developer and hasattr(developer, 'stripe_payouts_enabled') else False,
+                "onboarding_completed": developer.stripe_onboarding_completed if developer and hasattr(developer, 'stripe_onboarding_completed') else False,
+                "is_connected": bool(developer and hasattr(developer, 'stripe_payouts_enabled') and developer.stripe_payouts_enabled)
             } if is_developer else None
         }
 
@@ -9968,6 +9999,124 @@ async def stripe_webhook(
             await db.commit()
             logger.info(f"Payment session expired: {session['id']}")
     
+    return {"status": "success"}
+
+
+# ============================================
+# STRIPE CONNECT WEBHOOK
+# ============================================
+@app.post("/api/stripe-connect/webhook")
+async def stripe_connect_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Handle Stripe Connect webhook events for connected accounts"""
+    payload = await request.body()
+    sig_header = request.headers.get('stripe-signature')
+
+    # Use Connect webhook secret (separate from payment webhook)
+    connect_webhook_secret = os.getenv("STRIPE_CONNECT_WEBHOOK_SECRET") or os.getenv("STRIPE_WEBHOOK_SECRET")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, connect_webhook_secret
+        )
+    except ValueError as e:
+        logger.error(f"Invalid payload: {e}")
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError as e:
+        logger.error(f"Invalid signature: {e}")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    logger.info(f"Stripe Connect webhook received: {event['type']}")
+
+    # Handle account.updated - Stripe Connect account status changed
+    if event['type'] == 'account.updated':
+        account = event['data']['object']
+        account_id = account['id']
+
+        # Find user with this Stripe account
+        user_result = await db.execute(
+            select(User).where(User.stripe_account_id == account_id)
+        )
+        user = user_result.scalar_one_or_none()
+
+        if user:
+            # Update user's Stripe account status
+            user.stripe_payouts_enabled = account.get('payouts_enabled', False)
+            user.stripe_onboarding_completed = account.get('details_submitted', False)
+
+            if account.get('payouts_enabled'):
+                user.stripe_account_status = 'enabled'
+            elif account.get('details_submitted'):
+                user.stripe_account_status = 'pending_verification'
+            else:
+                user.stripe_account_status = 'pending'
+
+            await db.commit()
+            logger.info(f"Updated Stripe status for user {user.email}: payouts_enabled={user.stripe_payouts_enabled}")
+
+    # Handle transfer.paid - Transfer to connected account completed
+    elif event['type'] == 'transfer.paid':
+        transfer = event['data']['object']
+        transfer_id = transfer['id']
+
+        # Find payout with this transfer ID
+        payout_result = await db.execute(
+            select(DeveloperPayout).where(DeveloperPayout.stripe_transfer_id == transfer_id)
+        )
+        payout = payout_result.scalar_one_or_none()
+
+        if payout:
+            payout.status = 'completed'
+            payout.stripe_transfer_status = 'paid'
+            payout.completed_at = datetime.utcnow()
+            await db.commit()
+
+            # Send notification to developer
+            await send_notification_to_user(
+                str(payout.developer_id),
+                {
+                    "type": "payout_completed",
+                    "title": "Payout Completed!",
+                    "message": f"${float(payout.net_amount):.2f} has been transferred to your Stripe account.",
+                    "link": "/payout-settings"
+                },
+                db
+            )
+            logger.info(f"Payout {payout.id} completed via Stripe transfer {transfer_id}")
+
+    # Handle transfer.failed - Transfer to connected account failed
+    elif event['type'] == 'transfer.failed':
+        transfer = event['data']['object']
+        transfer_id = transfer['id']
+
+        payout_result = await db.execute(
+            select(DeveloperPayout).where(DeveloperPayout.stripe_transfer_id == transfer_id)
+        )
+        payout = payout_result.scalar_one_or_none()
+
+        if payout:
+            payout.status = 'failed'
+            payout.stripe_transfer_status = 'failed'
+            payout.failure_reason = transfer.get('failure_message', 'Transfer failed')
+            await db.commit()
+
+            # Notify developer
+            await send_notification_to_user(
+                str(payout.developer_id),
+                {
+                    "type": "payout_failed",
+                    "title": "Payout Failed",
+                    "message": f"Your payout of ${float(payout.net_amount):.2f} failed. Please check your Stripe account settings.",
+                    "link": "/payout-settings"
+                },
+                db
+            )
+
+            # Notify admin
+            logger.error(f"Payout {payout.id} failed: {payout.failure_reason}")
+
     return {"status": "success"}
 
 
@@ -10812,12 +10961,16 @@ async def unban_user(
 # ============================================
 
 # --- Developer Payout Preferences ---
-@app.get("/api/users/me/payout-preferences")
-async def get_payout_preferences(
+# ============================================
+# STRIPE CONNECT ENDPOINTS
+# ============================================
+
+@app.get("/api/stripe-connect/account-status")
+async def get_stripe_connect_status(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get current user's payout preferences"""
+    """Get current user's Stripe Connect account status"""
     user_result = await db.execute(
         select(User).where(User.id == uuid.UUID(current_user['id']))
     )
@@ -10826,23 +10979,33 @@ async def get_payout_preferences(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # If user has a Stripe account, fetch latest status from Stripe
+    if user.stripe_account_id:
+        try:
+            account = stripe.Account.retrieve(user.stripe_account_id)
+            # Update local status from Stripe
+            user.stripe_payouts_enabled = account.payouts_enabled
+            user.stripe_account_status = 'enabled' if account.payouts_enabled else 'pending'
+            user.stripe_onboarding_completed = account.details_submitted
+            await db.commit()
+        except stripe.error.StripeError as e:
+            logger.error(f"Error fetching Stripe account: {e}")
+
     return {
-        "payout_method": user.payout_method,
-        "payout_email": user.payout_email,
-        "payout_details": user.payout_details,
-        "payout_currency": user.payout_currency or 'USD',
-        "payout_verified": user.payout_verified or False,
+        "stripe_account_id": user.stripe_account_id,
+        "stripe_account_status": user.stripe_account_status,
+        "stripe_payouts_enabled": user.stripe_payouts_enabled or False,
+        "stripe_onboarding_completed": user.stripe_onboarding_completed or False,
         "total_earnings": float(user.total_earnings or 0)
     }
 
 
-@app.put("/api/users/me/payout-preferences")
-async def update_payout_preferences(
-    data: PayoutPreferencesUpdate,
+@app.post("/api/stripe-connect/create-account")
+async def create_stripe_connect_account(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update current user's payout preferences"""
+    """Create a Stripe Connect Express account for a developer"""
     user_result = await db.execute(
         select(User).where(User.id == uuid.UUID(current_user['id']))
     )
@@ -10851,32 +11014,114 @@ async def update_payout_preferences(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Validate payout method
-    valid_methods = ['paypal', 'wise', 'bank_transfer', 'crypto', 'other']
-    if data.payout_method not in valid_methods:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid payout method. Must be one of: {', '.join(valid_methods)}"
+    # Check if user already has a Stripe account
+    if user.stripe_account_id:
+        # User already has account, create new onboarding link
+        try:
+            account_link = stripe.AccountLink.create(
+                account=user.stripe_account_id,
+                refresh_url=f"{FRONTEND_URL}/payout-settings?stripe_refresh=true",
+                return_url=f"{FRONTEND_URL}/payout-settings?stripe_success=true",
+                type="account_onboarding",
+            )
+            return {"onboarding_url": account_link.url, "account_id": user.stripe_account_id}
+        except stripe.error.StripeError as e:
+            logger.error(f"Error creating account link: {e}")
+            raise HTTPException(status_code=500, detail="Failed to create onboarding link")
+
+    # Create new Stripe Express account
+    try:
+        account = stripe.Account.create(
+            type="express",
+            country="US",  # Default, Stripe will adjust based on user input
+            email=user.email,
+            capabilities={
+                "transfers": {"requested": True},
+            },
+            business_type="individual",
+            metadata={
+                "bitebids_user_id": str(user.id),
+                "bitebids_email": user.email
+            }
         )
 
-    # Update payout preferences
-    user.payout_method = data.payout_method
-    user.payout_email = data.payout_email
-    user.payout_details = data.payout_details
-    user.payout_currency = data.payout_currency or 'USD'
-    user.payout_verified = False  # Reset verification when details change
-    user.updated_at = datetime.utcnow()
+        # Save account ID to user
+        user.stripe_account_id = account.id
+        user.stripe_account_status = "pending"
+        user.stripe_payouts_enabled = False
+        user.stripe_onboarding_completed = False
+        await db.commit()
 
-    await db.commit()
+        # Create account link for onboarding
+        account_link = stripe.AccountLink.create(
+            account=account.id,
+            refresh_url=f"{FRONTEND_URL}/payout-settings?stripe_refresh=true",
+            return_url=f"{FRONTEND_URL}/payout-settings?stripe_success=true",
+            type="account_onboarding",
+        )
 
-    logger.info(f"User {user.email} updated payout preferences: method={data.payout_method}")
+        logger.info(f"Created Stripe Connect account {account.id} for user {user.email}")
 
-    return {
-        "message": "Payout preferences updated successfully",
-        "payout_method": user.payout_method,
-        "payout_email": user.payout_email,
-        "payout_currency": user.payout_currency
-    }
+        return {
+            "onboarding_url": account_link.url,
+            "account_id": account.id
+        }
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Error creating Stripe account: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create Stripe account: {str(e)}")
+
+
+@app.post("/api/stripe-connect/create-account-link")
+async def create_stripe_account_link(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new onboarding link for existing Stripe Connect account"""
+    user_result = await db.execute(
+        select(User).where(User.id == uuid.UUID(current_user['id']))
+    )
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.stripe_account_id:
+        raise HTTPException(status_code=400, detail="No Stripe account found. Please create one first.")
+
+    try:
+        account_link = stripe.AccountLink.create(
+            account=user.stripe_account_id,
+            refresh_url=f"{FRONTEND_URL}/payout-settings?stripe_refresh=true",
+            return_url=f"{FRONTEND_URL}/payout-settings?stripe_success=true",
+            type="account_onboarding",
+        )
+        return {"onboarding_url": account_link.url}
+    except stripe.error.StripeError as e:
+        logger.error(f"Error creating account link: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create onboarding link")
+
+
+@app.get("/api/stripe-connect/dashboard-link")
+async def get_stripe_dashboard_link(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get a link to the Stripe Express dashboard for the connected account"""
+    user_result = await db.execute(
+        select(User).where(User.id == uuid.UUID(current_user['id']))
+    )
+    user = user_result.scalar_one_or_none()
+
+    if not user or not user.stripe_account_id:
+        raise HTTPException(status_code=400, detail="No Stripe account connected")
+
+    try:
+        login_link = stripe.Account.create_login_link(user.stripe_account_id)
+        return {"dashboard_url": login_link.url}
+    except stripe.error.StripeError as e:
+        logger.error(f"Error creating dashboard link: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create dashboard link")
 
 
 # --- Developer Payout History ---
@@ -10976,7 +11221,9 @@ async def get_all_payouts(
             "developer": {
                 "id": str(p.developer_id),
                 "name": developer.name if developer else "Unknown",
-                "email": developer.email if developer else "Unknown"
+                "email": developer.email if developer else "Unknown",
+                "stripe_account_id": developer.stripe_account_id if developer and hasattr(developer, 'stripe_account_id') else None,
+                "stripe_payouts_enabled": developer.stripe_payouts_enabled if developer and hasattr(developer, 'stripe_payouts_enabled') else False
             },
             "project_id": str(p.project_id) if p.project_id else None,
             "project_title": project_title,
@@ -10985,11 +11232,9 @@ async def get_all_payouts(
             "net_amount": float(p.net_amount),
             "currency": p.currency,
             "status": p.status,
-            "payout_method": p.payout_method,
-            "payout_email": p.payout_email,
-            "payout_details": p.payout_details,
-            "transaction_id": p.transaction_id,
-            "transaction_notes": p.transaction_notes,
+            # Stripe Connect transfer details
+            "stripe_transfer_id": p.stripe_transfer_id if hasattr(p, 'stripe_transfer_id') else None,
+            "stripe_transfer_status": p.stripe_transfer_status if hasattr(p, 'stripe_transfer_status') else None,
             "failure_reason": p.failure_reason,
             "description": p.description,
             "created_at": p.created_at.isoformat() if p.created_at else None,
@@ -11242,6 +11487,89 @@ async def retry_payout(
         "payout_id": str(payout.id),
         "status": "pending"
     }
+
+
+@app.post("/api/admin/payouts/{payout_id}/retry-stripe")
+async def retry_stripe_transfer(
+    payout_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: Retry a failed Stripe Connect transfer"""
+    try:
+        payout_uuid = uuid.UUID(payout_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid payout ID")
+
+    # Get payout with developer info
+    payout_result = await db.execute(
+        select(DeveloperPayout).where(DeveloperPayout.id == payout_uuid)
+    )
+    payout = payout_result.scalar_one_or_none()
+
+    if not payout:
+        raise HTTPException(status_code=404, detail="Payout not found")
+
+    if payout.status != 'failed':
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only retry failed payouts. Current status: '{payout.status}'"
+        )
+
+    # Get developer
+    dev_result = await db.execute(
+        select(User).where(User.id == payout.developer_id)
+    )
+    developer = dev_result.scalar_one_or_none()
+
+    if not developer:
+        raise HTTPException(status_code=404, detail="Developer not found")
+
+    if not developer.stripe_account_id or not developer.stripe_payouts_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Developer does not have Stripe Connect enabled"
+        )
+
+    # Attempt Stripe transfer
+    try:
+        transfer = stripe.Transfer.create(
+            amount=int(payout.net_amount * 100),  # Convert to cents
+            currency="usd",
+            destination=developer.stripe_account_id,
+            metadata={
+                "payout_id": str(payout.id),
+                "developer_id": str(developer.id),
+                "project_id": str(payout.project_id) if payout.project_id else None,
+                "retry": "true",
+                "admin_id": admin.get('id', 'unknown')
+            }
+        )
+
+        # Update payout record
+        payout.stripe_transfer_id = transfer.id
+        payout.stripe_transfer_status = transfer.status if hasattr(transfer, 'status') else 'pending'
+        payout.status = 'processing'
+        payout.failure_reason = None
+        payout.updated_at = datetime.utcnow()
+
+        await db.commit()
+
+        logger.info(f"Admin {admin['email']} retried Stripe transfer for payout {payout_id}: {transfer.id}")
+
+        return {
+            "message": "Stripe transfer initiated successfully",
+            "payout_id": str(payout.id),
+            "stripe_transfer_id": transfer.id,
+            "status": "processing"
+        }
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe transfer retry failed for payout {payout_id}: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stripe transfer failed: {str(e)}"
+        )
 
 
 @app.put("/api/admin/payouts/{payout_id}/verify-method")
