@@ -4936,63 +4936,6 @@ async def send_chat_message(
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-# # Get Room Chat Messages 
-# @app.get("/api/chat/rooms/{room_id}/messages")
-# async def get_chat_messages(
-#     room_id: str,
-#     limit: int = Query(50, le=100),
-#     before: Optional[str] = None,
-#     db: AsyncSession = Depends(get_db),
-#     current_user = Depends(get_current_user)
-# ):
-#     """Get messages from a chat room"""
-#     try:
-#         # Verify room exists and user has access
-#         room_result = await db.execute(
-#             select(ChatRoom).where(ChatRoom.id == uuid.UUID(room_id))
-#         )
-#         room = room_result.scalar_one_or_none()
-        
-#         if not room:
-#             raise HTTPException(status_code=404, detail="Chat room not found")
-        
-#         user_id = uuid.UUID(current_user["id"])
-#         if user_id not in [room.developer_id, room.investor_id]:
-#             raise HTTPException(status_code=403, detail="Access denied")
-        
-#         # Build query
-#         query = select(ChatMessage).where(ChatMessage.room_id == uuid.UUID(room_id))
-        
-#         if before:
-#             query = query.where(ChatMessage.created_at < datetime.fromisoformat(before))
-        
-#         query = query.order_by(ChatMessage.created_at.desc()).limit(limit)
-        
-#         result = await db.execute(query)
-#         messages = list(reversed(result.scalars().all()))
-        
-#         # Mark messages as read
-#         unread_ids = [msg.id for msg in messages if not msg.read and msg.sender_id != user_id]
-        
-#         if unread_ids:
-#             await db.execute(
-#                 update(ChatMessage)
-#                 .where(ChatMessage.id.in_(unread_ids))
-#                 .values(read=True, read_at=func.now())
-#             )
-#             await db.commit()
-#             total_unread = await get_total_unread_chat_count(db, user_id)
-#             await manager.send_ws_event(
-#                 str(user_id),
-#                 {"type": "chat_unread_count", "total_unread_count": total_unread}
-#             )
-        
-#         return models_to_list(messages)
-        
-#     except Exception as e:
-#         logger.error(f"Error getting chat messages: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
-
 
 # Get Room Chat Messages 
 @app.get("/api/chat/rooms/{room_id}/messages")

@@ -71,6 +71,24 @@ class User(Base):
     # Profile data (stored as JSONB)
     profile = Column(JSONB)
     bank_details = Column(JSONB)
+    # Email verification
+    email_verified = Column(Boolean, default=False)
+    verification_token = Column(String(255), nullable=True)
+    verification_sent_at = Column(TIMESTAMP)
+
+    # Email change flow
+    pending_email = Column(String(255), nullable=True)
+    email_change_token = Column(String(255), nullable=True)
+    email_change_sent_at = Column(TIMESTAMP)
+
+    # Platform features
+    posting_credits = Column(Integer, default=0)
+
+    # Stripe Connect
+    stripe_account_id = Column(String(255), nullable=True)
+    stripe_account_status = Column(String(50), nullable=True)
+    stripe_payouts_enabled = Column(Boolean, default=False)
+    stripe_onboarding_completed = Column(Boolean, default=False)
     
     # Timestamps
     created_at = Column(TIMESTAMP, server_default=func.now())
@@ -81,6 +99,7 @@ class User(Base):
         CheckConstraint("role IN ('developer', 'investor', 'admin')"),
         CheckConstraint("status IN ('active', 'banned', 'suspended', 'pending', 'deleted')")
         Index('idx_users_oauth', 'oauth_provider', 'oauth_id', unique=True, postgresql_where=(oauth_provider != None)),
+        Index('idx_users_stripe_account_id', 'stripe_account_id', unique=True, postgresql_where=(stripe_account_id != None)),
     )
 
 
@@ -131,6 +150,7 @@ class Project(Base):
     created_at = Column(TIMESTAMP, server_default=func.now(), index=True)
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
     completed_at = Column(TIMESTAMP)
+    images = Column(ARRAY(String), default=[])
     
     __table_args__ = (
         CheckConstraint("status IN ('open', 'in_progress', 'completed', 'closed', 'cancelled', 'fixed_price', 'disputed')"),
@@ -298,6 +318,7 @@ class Notification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     link = Column(String(500))
+    details = Column(JSONB)
     
     # Status
     read = Column(Boolean, default=False)
@@ -334,6 +355,203 @@ class ActivityLog(Base):
 # ============================================
 # DATABASE INITIALIZATION
 # ============================================
+
+
+class CheckoutSession(Base):
+    __tablename__ = 'checkout_sessions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(String(255), unique=True, index=True, nullable=True)
+    order_reference = Column(String(100), unique=True, index=True, nullable=True)
+    external_reference = Column(String(255), nullable=True)
+
+    project_id = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='SET NULL'), nullable=True, index=True)
+    amount = Column(DECIMAL(12,2), nullable=False)
+    total_with_fees = Column(DECIMAL(12,2), nullable=False)
+    fees = Column(DECIMAL(12,2), nullable=False)
+    payment_method = Column(String(100), nullable=False)
+
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
+
+    payment_request = Column(JSONB, nullable=True)
+    fee_calculation = Column(JSONB, nullable=True)
+    extra_data = Column(JSONB, nullable=True)
+
+    status = Column(String(50), default='pending', index=True)
+
+    payment_url = Column(String(1000), nullable=True)
+    payment_method_used = Column(String(100), nullable=True)
+
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    expires_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'completed', 'cancelled', 'expired', 'refunded')"),
+    )
+
+
+class DeveloperPayout(Base):
+    __tablename__ = 'developer_payouts'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    developer_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='SET NULL'), nullable=True, index=True)
+    checkout_session_id = Column(UUID(as_uuid=True), ForeignKey('checkout_sessions.id', ondelete='SET NULL'), nullable=True)
+    investor_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
+    gross_amount = Column(DECIMAL(12,2), nullable=False)
+    platform_fee = Column(DECIMAL(12,2), nullable=False)
+    net_amount = Column(DECIMAL(12,2), nullable=False)
+    currency = Column(String(10), default='USD')
+
+    stripe_transfer_id = Column(String(255), nullable=True)
+    stripe_transfer_status = Column(String(50), nullable=True)
+
+    status = Column(String(50), default='pending', index=True)
+
+    processed_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    processed_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+
+    transaction_id = Column(String(255), nullable=True)
+    transaction_notes = Column(Text, nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    description = Column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')"),
+        Index('idx_payout_developer_status', 'developer_id', 'status'),
+    )
+
+
+class ChatRoom(Base):
+    __tablename__ = 'chat_rooms'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    developer_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    investor_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    status = Column(String(50), default='active', index=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    closed_at = Column(TIMESTAMP)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'closed', 'archived')"),
+        UniqueConstraint('project_id', 'investor_id', name='chat_rooms_project_investor_unique'),
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = 'chat_messages'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    room_id = Column(UUID(as_uuid=True), ForeignKey('chat_rooms.id', ondelete='CASCADE'), nullable=False, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    message = Column(Text, nullable=False)
+    message_type = Column(String(50), default='text')
+
+    file_url = Column(String(500))
+    file_name = Column(String(255))
+    file_type = Column(String(100))
+    file_size = Column(Integer)
+
+    read = Column(Boolean, default=False)
+    read_at = Column(TIMESTAMP)
+
+    flagged = Column(Boolean, default=False)
+    moderation_status = Column(String(50), default='pending')
+    moderation_reason = Column(Text, nullable=True)
+
+    created_at = Column(TIMESTAMP, server_default=func.now(), index=True)
+    edited_at = Column(TIMESTAMP)
+
+    __table_args__ = (
+        CheckConstraint("message_type IN ('text', 'file', 'system', 'payment_update')"),
+        CheckConstraint("moderation_status IN ('pending', 'approved', 'rejected')"),
+    )
+
+
+class ProjectDisputeSimple(Base):
+    __tablename__ = 'project_disputes_simple'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    reason = Column(String(100), nullable=False)
+    notes = Column(Text)
+    disputed_by = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    disputed_at = Column(TIMESTAMP, server_default=func.now())
+    previous_status = Column(String(50))
+    investor_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False, index=True)
+
+    resolved = Column(Boolean, default=False)
+    resolution = Column(String(50))
+    admin_notes = Column(Text)
+    resolved_by = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    resolved_at = Column(TIMESTAMP)
+
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+
+
+class ProjectGithubRepo(Base):
+    __tablename__ = 'project_github_repos'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    room_id = Column(UUID(as_uuid=True), ForeignKey('chat_rooms.id', ondelete='CASCADE'), unique=True, nullable=False)
+    repo_url = Column(String(500), nullable=False)
+    submitted_by = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    is_private = Column(Boolean, default=False)
+    encrypted_access_token = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index('idx_github_repo_room', 'room_id'),
+    )
+
+
+class ProjectUpload(Base):
+    __tablename__ = 'project_uploads'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    room_id = Column(UUID(as_uuid=True), ForeignKey('chat_rooms.id', ondelete='CASCADE'), unique=True, nullable=False)
+    file_key = Column(String(500), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_size = Column(Integer, nullable=False)
+    file_tree = Column(JSONB, nullable=False)
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    uploaded_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    status = Column(String(50), default='pending')
+
+    __table_args__ = (
+        Index('idx_project_upload_room', 'room_id'),
+        CheckConstraint("status IN ('pending', 'confirmed', 'downloaded')"),
+    )
+
+
+class ContactFormRecord(Base):
+    __tablename__ = 'contact_form_submissions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    email = Column(String(255), nullable=False)
+    subject = Column(String(200), nullable=False)
+    category = Column(String(50), nullable=False)
+    message = Column(Text, nullable=False)
+    submitted_at = Column(TIMESTAMP, server_default=func.now())
+    responded = Column(Boolean, default=False)
+    responded_at = Column(TIMESTAMP)
+
+    __table_args__ = (
+        CheckConstraint("category IN ('general', 'technical', 'billing', 'partnership', 'feedback')"),
+    )
+
 
 async def init_database():
     """Initialize database with tables"""
