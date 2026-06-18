@@ -1,7 +1,0 @@
-Vendor (SIP)
-   ↓
-Asterisk (softswitch logic)
-   ↓
-GSM Gateway (SIP trunk to GoIP)
-   ↓
-Mobile Network → Customer Phone
