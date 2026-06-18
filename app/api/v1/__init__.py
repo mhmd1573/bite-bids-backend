@@ -13,7 +13,7 @@ from app.api.v1 import (
     contact,
     github,
     uploads,
-    stripe,
+    payoneer,
     oauth,
 )
 
@@ -33,7 +33,7 @@ router.include_router(disputes.router)
 router.include_router(contact.router)
 router.include_router(github.router)
 router.include_router(uploads.router)
-router.include_router(stripe.router)
+router.include_router(payoneer.router)
 router.include_router(oauth.router)
 
 __all__ = ["router"]

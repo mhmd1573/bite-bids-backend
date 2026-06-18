@@ -49,7 +49,17 @@ class Settings:
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
-    STRIPE_CONNECT_WEBHOOK_SECRET: str = os.getenv("STRIPE_CONNECT_WEBHOOK_SECRET")
+
+
+    # ============================================
+    # ✅ PAYONEER (For payouts)
+    # ============================================
+    PAYONEER_CLIENT_ID: str = os.getenv("PAYONEER_CLIENT_ID")
+    PAYONEER_CLIENT_SECRET: str = os.getenv("PAYONEER_CLIENT_SECRET")
+    PAYONEER_PARTNER_ID: str = os.getenv("PAYONEER_PARTNER_ID")
+    PAYONEER_PROGRAM_ID: str = os.getenv("PAYONEER_PROGRAM_ID")
+    PAYONEER_API_URL: str = os.getenv("PAYONEER_API_URL", "https://api.sandbox.payoneer.com/v1/")  # ✅ FIXED: Added quotes
+    PAYONEER_WEBHOOK_SECRET: str = os.getenv("PAYONEER_WEBHOOK_SECRET")
     
     # Cloudflare R2
     R2_ACCOUNT_ID: str = os.getenv("R2_ACCOUNT_ID")

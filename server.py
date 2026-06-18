@@ -7705,7 +7705,8 @@ async def send_project_approved_email(
     project_title: str,
     amount: float,
     platform_fee: float,
-    gross_amount: float
+    gross_amount: float,
+    payoneer_transfer_id: str = None
 ):
     """
     Send project approval email to developer

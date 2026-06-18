@@ -5,7 +5,6 @@ from app.services.project_service import ProjectService
 from app.services.email_service import EmailService
 from app.services.notification_service import NotificationService
 from app.services.moderation_service import ModerationService, ContentFilter
-from app.services.stripe_service import StripeService
 
 # We'll add more as we create them
 
@@ -17,5 +16,4 @@ __all__ = [
     "NotificationService",
     "ModerationService",
     "ContentFilter",
-    "StripeService",
 ]

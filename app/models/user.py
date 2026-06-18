@@ -17,7 +17,7 @@ class User(Base):
     
     # Authentication
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=True)  # Nullable for OAuth users
+    password_hash = Column(String(255), nullable=True)
     name = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, index=True)
     status = Column(String(50), default="active", index=True)
@@ -40,7 +40,7 @@ class User(Base):
     skills = Column(ARRAY(Text))
     verified = Column(Boolean, default=False)
     verification_date = Column(TIMESTAMP)
-    profile = Column(JSONB)  # Additional profile data as JSON
+    profile = Column(JSONB)
     
     # Statistics
     projects_completed = Column(Integer, default=0)
@@ -59,11 +59,15 @@ class User(Base):
     oauth_provider = Column(String(50))
     oauth_id = Column(String(255))
     
-    # Stripe Connect
-    stripe_account_id = Column(String(255), nullable=True, unique=True)
-    stripe_account_status = Column(String(50), nullable=True)
-    stripe_payouts_enabled = Column(Boolean, default=False)
-    stripe_onboarding_completed = Column(Boolean, default=False)
+    # ============================================
+    # ✅ PAYONEER FIELDS (Replace Stripe Connect)
+    # ============================================
+    payoneer_payee_id = Column(String(255), nullable=True, unique=True)  # Payoneer's internal payee ID
+    payoneer_payee_status = Column(String(50), nullable=True)  # active, pending, inactive, onboarding
+    payoneer_onboarding_completed = Column(Boolean, default=False)  # True when KYC complete
+    payoneer_verified = Column(Boolean, default=False)  # Verified email/account
+    payoneer_currency = Column(String(10), default='USD')  # Preferred payout currency
+    payoneer_onboarding_url = Column(String(500), nullable=True)  # Last generated onboarding URL
     
     # Timestamps
     created_at = Column(TIMESTAMP, server_default=func.now())
@@ -77,8 +81,9 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('developer', 'investor', 'admin')"),
         CheckConstraint("status IN ('active', 'banned', 'suspended', 'pending', 'deleted')"),
+        CheckConstraint("payoneer_payee_status IN ('active', 'pending', 'inactive', 'onboarding')"),
         Index('idx_users_oauth', 'oauth_provider', 'oauth_id', unique=True, postgresql_where=(oauth_provider != None)),
-        Index('idx_users_stripe_account_id', 'stripe_account_id', unique=True, postgresql_where=(stripe_account_id != None)),
+        Index('idx_users_payoneer_payee_id', 'payoneer_payee_id', unique=True, postgresql_where=(payoneer_payee_id != None)),
     )
     
     def __repr__(self):

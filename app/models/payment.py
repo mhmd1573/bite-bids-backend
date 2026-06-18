@@ -73,9 +73,13 @@ class DeveloperPayout(Base):
     net_amount = Column(DECIMAL(12,2), nullable=False)
     currency = Column(String(10), default='USD')
     
-    # Stripe Connect Transfer
-    stripe_transfer_id = Column(String(255), nullable=True)
-    stripe_transfer_status = Column(String(50), nullable=True)
+    # ============================================
+    # ✅ PAYONEER TRANSFER FIELDS (Replace Stripe)
+    # ============================================
+    payoneer_transfer_id = Column(String(255), nullable=True)  # Payoneer transfer ID
+    payoneer_transfer_status = Column(String(50), nullable=True)  # pending, processing, completed, failed
+    payoneer_quote_id = Column(String(255), nullable=True)  # Payoneer quote for the transfer
+    payoneer_batch_id = Column(String(255), nullable=True)  # Batch ID if bulk payout
     
     # Status tracking
     status = Column(String(50), default='pending', index=True)  # pending, processing, completed, failed, cancelled
@@ -103,7 +107,9 @@ class DeveloperPayout(Base):
     # Table constraints
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')"),
+        CheckConstraint("payoneer_transfer_status IN ('pending', 'processing', 'completed', 'failed')"),
         Index('idx_payout_developer_status', 'developer_id', 'status'),
+        Index('idx_payout_payoneer_transfer_id', 'payoneer_transfer_id'),
     )
     
     def __repr__(self):
