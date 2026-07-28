@@ -40,13 +40,27 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# ✅ CORS configuration with your actual frontend URLs
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else ["*"],
+    allow_origins=[
+        "http://localhost:3000",           # Local development
+        "https://bitebids.com",            # Production domain
+        "https://bitebids.netlify.app",    # Netlify deployment
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers",
+    ],
+    expose_headers=["Content-Length", "X-Kuma-Revision"],
+    max_age=3600,
 )
 
 # Include routers
