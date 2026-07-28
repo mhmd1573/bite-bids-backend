@@ -315,3 +315,86 @@ async def google_callback(code: str, request: Request, db: AsyncSession = Depend
     except Exception as e:
         error_message = urllib.parse.quote(str(e))
         return RedirectResponse(url=f"{settings.FRONTEND_URL}?auth=error&message={error_message}")
+
+
+@router.post("/oauth/complete")
+async def complete_oauth_registration(
+    request: dict, 
+    db: AsyncSession = Depends(get_db)
+):
+    """Complete OAuth registration"""
+    try:
+        oauth_data = request.get("oauth_data")
+        provider = request.get("provider")
+        selected_role = request.get("role")
+        company = request.get("company", "")
+        password = request.get("password")  
+
+        if not oauth_data or not provider or not selected_role:
+            raise HTTPException(status_code=400, detail="OAuth data, provider, and role are required")
+        
+        email = oauth_data.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        
+        # ✅ FIX: Ensure name is never NULL
+        name = oauth_data.get("name")
+        if not name or not name.strip():
+            # Fallback 1: Use email username
+            name = email.split("@")[0]
+        
+        # Additional validation
+        if not company or not company.strip():
+            raise HTTPException(status_code=400, detail="Company is required")
+        
+        # Check if user exists
+        result = await db.execute(select(User).where(User.email == email))
+        existing_user = result.scalar_one_or_none()
+        
+        if existing_user:
+            raise HTTPException(status_code=400, detail="User already exists")
+        
+        # Hash Password
+        password_hash = hash_password(password)
+
+        # ✅ FIX: Create new user with guaranteed name value
+        new_user = User(
+            email=email,
+            name=name,  # Now guaranteed to have a value
+            password_hash=password_hash,
+            role=selected_role,
+            email_verified=True,
+            verified=True,  # OAuth users are automatically verified
+            status="active",
+            company=company,
+            oauth_provider=provider,
+            oauth_id=str(oauth_data.get("provider_id", "")),
+            reputation_score=0,
+            profile={
+                "avatar_url": oauth_data.get("avatar_url") or oauth_data.get("picture", "")
+            }
+        )
+        
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
+        
+        # Generate JWT token
+        user_dict = model_to_dict(new_user)
+        token = create_jwt_token(user_dict)
+        
+        return {
+            "token": token,
+            "user": {
+                "id": str(new_user.id),
+                "email": new_user.email,
+                "name": new_user.name,
+                "role": new_user.role
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OAuth registration error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to complete registration")        
