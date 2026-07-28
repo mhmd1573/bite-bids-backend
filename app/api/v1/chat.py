@@ -1,5 +1,5 @@
 # app/api/v1/chat.py
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, or_, func
@@ -8,6 +8,8 @@ import os
 import shutil
 from datetime import datetime, timezone
 from typing import Optional
+import boto3
+from botocore.config import Config
 
 from app.database import get_db
 from app.models.chat import ChatRoom, ChatMessage
@@ -24,6 +26,18 @@ from app.utils.converters import model_to_dict
 from app.services.notification_service import NotificationService
 from app.services.moderation_service import ModerationService
 from app.config import settings
+
+# Initialize R2 client (same pattern as uploads.py)
+r2_client = None
+if settings.R2_ACCOUNT_ID and settings.R2_ACCESS_KEY_ID and settings.R2_SECRET_ACCESS_KEY:
+    r2_client = boto3.client(
+        's3',
+        endpoint_url=f'https://{settings.R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+        config=Config(signature_version='s3v4'),
+        region_name='auto'
+    )
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -374,7 +388,10 @@ async def upload_chat_file(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Upload a file to a chat room"""
+    """
+    Upload a chat file/image to ImgBB (same pattern as project images)
+    ✅ UPDATED: Uses ImgBB for cloud storage instead of local disk
+    """
     temp_path = None
 
     try:
@@ -402,7 +419,7 @@ async def upload_chat_file(
         if len(content) > MAX_UPLOAD_SIZE:
             raise HTTPException(status_code=400, detail=f"File too large. Max size: {MAX_UPLOAD_SIZE / 1024 / 1024} MB")
 
-        # Save temporary file
+        # Save temporary file for moderation
         temp_dir = "uploads/temp"
         os.makedirs(temp_dir, exist_ok=True)
         temp_filename = f"{uuid.uuid4()}_{filename}"
@@ -424,24 +441,49 @@ async def upload_chat_file(
                 detail="This image contains contact information (phone, email, social media, or URLs)."
             )
 
-        # Save to permanent location
-        upload_dir = settings.UPLOAD_DIR or "uploads/chat_files"
-        os.makedirs(upload_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        clean_filename = os.path.basename(filename).replace("..", "")
-        safe_filename = f"{user_id}_{timestamp}_{clean_filename}"
-        final_path = os.path.join(upload_dir, safe_filename)
-        shutil.move(temp_path, final_path)
+        # Upload to ImgBB (same as project images)
+        if not settings.IMGBB_API_KEY:
+            raise HTTPException(
+                status_code=500,
+                detail="ImgBB API key not configured. Please contact administrator."
+            )
+
+        import base64
+        import requests
+
+        with open(temp_path, 'rb') as img_file:
+            image_data = base64.b64encode(img_file.read()).decode('utf-8')
+
+        upload_data = {
+            'key': settings.IMGBB_API_KEY,
+            'image': image_data,
+            'name': f"chat_{room_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+        }
+
+        response = requests.post(settings.IMGBB_UPLOAD_URL, data=upload_data, timeout=30)
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not result.get('success'):
+            raise Exception(f"ImgBB upload failed: {result.get('error', {}).get('message', 'Unknown error')}")
+
+        image_url = result['data']['url']
+        delete_url = result['data'].get('delete_url', '')
+
+        # Clean up temp file
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
         temp_path = None
 
-        # Create database message
+        # Create database message with cloud URL
         new_message = ChatMessage(
             id=uuid.uuid4(),
             room_id=uuid.UUID(room_id),
             sender_id=user_id,
             message=f"🖼️ Shared an image: {filename}",
             message_type='file',
-            file_url=f"/uploads/chat_files/{safe_filename}",
+            file_url=image_url,
             file_name=filename,
             file_type=file_ext,
             file_size=len(content),
@@ -458,9 +500,10 @@ async def upload_chat_file(
         return {
             "success": True,
             "message_id": str(new_message.id),
-            "file_url": new_message.file_url,
-            "file_name": new_message.file_name,
+            "file_url": image_url,
+            "file_name": filename,
             "file_size": len(content),
+            "delete_url": delete_url,
             "message": message_dict
         }
 
@@ -473,6 +516,68 @@ async def upload_chat_file(
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@router.get("/files/{message_id}/download")
+async def download_chat_file(
+    message_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download a chat file via redirect to the cloud URL
+    ✅ NEW: Provides download capability for chat files
+    """
+    try:
+        message_uuid = uuid.UUID(message_id)
+        user_id = uuid.UUID(current_user["id"])
+
+        # Get message
+        result = await db.execute(
+            select(ChatMessage).where(ChatMessage.id == message_uuid)
+        )
+        message = result.scalar_one_or_none()
+
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        # Get chat room for authorization
+        room_result = await db.execute(
+            select(ChatRoom).where(ChatRoom.id == message.room_id)
+        )
+        room = room_result.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        if user_id not in [room.developer_id, room.investor_id]:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if not message.file_url:
+            raise HTTPException(status_code=404, detail="No file attached to this message")
+
+        # If it's a cloud URL (ImgBB), redirect to it
+        if message.file_url.startswith('http://') or message.file_url.startswith('https://'):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=message.file_url)
+
+        # If it's a local file (legacy), serve it directly
+        if message.file_url.startswith('/'):
+            file_path = message.file_url.lstrip('/')
+            if os.path.exists(file_path):
+                return FileResponse(
+                    path=file_path,
+                    filename=message.file_name or os.path.basename(file_path)
+                )
+
+        raise HTTPException(status_code=404, detail="File not found")
+
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid message ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 
 @router.get("/unread-count/total")
