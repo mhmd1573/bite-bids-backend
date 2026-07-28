@@ -8,19 +8,47 @@ try:
     from app.config import settings
 except ImportError:
     import os
+
     class FallbackSettings:
-        DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:root@localhost:5432/bitebids")
+        DATABASE_URL = os.getenv(
+            "DATABASE_URL",
+            "postgresql+asyncpg://postgres:root@localhost:5432/bitebids"
+        )
         DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+
     settings = FallbackSettings()
+
+
+# Normalize PostgreSQL URL for asyncpg
+database_url = settings.DATABASE_URL
+
+if database_url.startswith("postgresql://"):
+    database_url = database_url.replace(
+        "postgresql://",
+        "postgresql+asyncpg://",
+        1
+    )
+
+elif database_url.startswith("postgres://"):
+    database_url = database_url.replace(
+        "postgres://",
+        "postgresql+asyncpg://",
+        1
+    )
+
 
 # Create async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.DEBUG if hasattr(settings, 'DEBUG') else False,
+    database_url,
+    echo=getattr(settings, "DEBUG", False),
     pool_pre_ping=True,
     pool_size=10,
-    max_overflow=20
+    max_overflow=20,
+    connect_args={
+        "ssl": True
+    }
 )
+
 
 # Create async session factory
 AsyncSessionLocal = async_sessionmaker(
@@ -31,8 +59,10 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False
 )
 
-# Base class for models (re-export from models.base)
+
+# Base class for models
 from app.models.base import Base
+
 
 # Dependency for FastAPI
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -43,7 +73,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         finally:
             await session.close()
 
-# Helper function to get database session (for non-FastAPI contexts)
+
+# Helper function to get database session
 async def get_db_session() -> AsyncSession:
-    """Get a database session directly (for background tasks, etc.)"""
+    """Get a database session directly for background tasks, etc."""
     return AsyncSessionLocal()
