@@ -60,14 +60,15 @@ class User(Base):
     oauth_id = Column(String(255))
     
     # ============================================
-    # ✅ PAYONEER FIELDS (Replace Stripe Connect)
+    # ✅ BANK ACCOUNT FIELDS (Manual Bank Transfer)
     # ============================================
-    payoneer_payee_id = Column(String(255), nullable=True, unique=True)  # Payoneer's internal payee ID
-    payoneer_payee_status = Column(String(50), nullable=True)  # active, pending, inactive, onboarding
-    payoneer_onboarding_completed = Column(Boolean, default=False)  # True when KYC complete
-    payoneer_verified = Column(Boolean, default=False)  # Verified email/account
-    payoneer_currency = Column(String(10), default='USD')  # Preferred payout currency
-    payoneer_onboarding_url = Column(String(500), nullable=True)  # Last generated onboarding URL
+    bank_account_holder = Column(String(255), nullable=True)  # Full name on bank account
+    bank_name = Column(String(255), nullable=True)  # Bank institution name
+    bank_account_number = Column(String(255), nullable=True)  # Account number
+    bank_routing_number = Column(String(255), nullable=True)  # Routing/ABA number
+    bank_iban = Column(String(255), nullable=True)  # IBAN for international
+    bank_swift_code = Column(String(255), nullable=True)  # SWIFT/BIC code
+    bank_currency = Column(String(10), default='USD')  # Preferred payout currency
     
     # Timestamps
     created_at = Column(TIMESTAMP, server_default=func.now())
@@ -81,9 +82,7 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('developer', 'investor', 'admin')"),
         CheckConstraint("status IN ('active', 'banned', 'suspended', 'pending', 'deleted')"),
-        CheckConstraint("payoneer_payee_status IN ('active', 'pending', 'inactive', 'onboarding')"),
         Index('idx_users_oauth', 'oauth_provider', 'oauth_id', unique=True, postgresql_where=(oauth_provider != None)),
-        Index('idx_users_payoneer_payee_id', 'payoneer_payee_id', unique=True, postgresql_where=(payoneer_payee_id != None)),
     )
     
     def __repr__(self):

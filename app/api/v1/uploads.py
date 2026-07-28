@@ -311,7 +311,7 @@ async def get_download_presigned_url(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/project-image")
+@router.post("/upload-image")
 async def upload_project_image(
     image: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)

@@ -6254,167 +6254,167 @@ async def upload_project_image(
     image: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Upload and validate project image with OpenAI moderation
-    """
-    temp_path = None
+#     """
+#     Upload and validate project image with OpenAI moderation
+#     """
+#     temp_path = None
     
-    try:
-        logger.info(f"📷 Image upload request: {image.filename}, User: {current_user.get('id')}")
+#     try:
+#         logger.info(f"📷 Image upload request: {image.filename}, User: {current_user.get('id')}")
         
-        # STEP 1: VALIDATE FILE TYPE
-        filename = image.filename
-        file_ext = os.path.splitext(filename)[1].lower()
+#         # STEP 1: VALIDATE FILE TYPE
+#         filename = image.filename
+#         file_ext = os.path.splitext(filename)[1].lower()
         
-        if file_ext not in ['.jpg', '.jpeg', '.png']:
-            raise HTTPException(status_code=400, detail="Only JPEG and PNG images are allowed.")
+#         if file_ext not in ['.jpg', '.jpeg', '.png']:
+#             raise HTTPException(status_code=400, detail="Only JPEG and PNG images are allowed.")
         
-        # STEP 2: READ FILE
-        content = await image.read()
-        if len(content) == 0:
-            raise HTTPException(status_code=400, detail="Cannot upload empty file.")
+#         # STEP 2: READ FILE
+#         content = await image.read()
+#         if len(content) == 0:
+#             raise HTTPException(status_code=400, detail="Cannot upload empty file.")
         
-        # STEP 3: VALIDATE SIZE
-        max_size = 5 * 1024 * 1024  # 5MB
-        if len(content) > max_size:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"File too large. Max size: {max_size / 1024 / 1024} MB"
-            )
+#         # STEP 3: VALIDATE SIZE
+#         max_size = 5 * 1024 * 1024  # 5MB
+#         if len(content) > max_size:
+#             raise HTTPException(
+#                 status_code=400, 
+#                 detail=f"File too large. Max size: {max_size / 1024 / 1024} MB"
+#             )
         
-        # STEP 4: SAVE TEMPORARY FILE
-        temp_dir = "uploads/temp"
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_filename = f"{uuid.uuid4()}_{filename}"
-        temp_path = os.path.join(temp_dir, temp_filename)
+#         # STEP 4: SAVE TEMPORARY FILE
+#         temp_dir = "uploads/temp"
+#         os.makedirs(temp_dir, exist_ok=True)
+#         temp_filename = f"{uuid.uuid4()}_{filename}"
+#         temp_path = os.path.join(temp_dir, temp_filename)
         
-        with open(temp_path, 'wb') as f:
-            f.write(content)
+#         with open(temp_path, 'wb') as f:
+#             f.write(content)
         
-        logger.info(f"✅ Temporary file saved: {temp_path}")
+#         logger.info(f"✅ Temporary file saved: {temp_path}")
         
-        # STEP 5: OPENAI MODERATION
-        logger.info("🛡️ Running OpenAI image moderation...")
-        moderation_result = await openai_image_moderation(temp_path)
-        logger.info(f"🛡️ Moderation result: {moderation_result}")
+#         # STEP 5: OPENAI MODERATION
+#         logger.info("🛡️ Running OpenAI image moderation...")
+#         moderation_result = await openai_image_moderation(temp_path)
+#         logger.info(f"🛡️ Moderation result: {moderation_result}")
         
-        if moderation_result["contains_harmful_content"]:
-            logger.warning("❌ Image contains harmful content")
-            os.remove(temp_path)
-            raise HTTPException(
-                status_code=400, 
-                detail="This image contains harmful or inappropriate content."
-            )
+#         if moderation_result["contains_harmful_content"]:
+#             logger.warning("❌ Image contains harmful content")
+#             os.remove(temp_path)
+#             raise HTTPException(
+#                 status_code=400, 
+#                 detail="This image contains harmful or inappropriate content."
+#             )
         
-        if moderation_result["contains_contact_info"]:
-            logger.warning("❌ Image contains contact information")
-            os.remove(temp_path)
-            raise HTTPException(
-                status_code=400, 
-                detail="This image contains contact information (phone, email, social media, or URLs). Please remove any contact details from the image."
-            )
+#         if moderation_result["contains_contact_info"]:
+#             logger.warning("❌ Image contains contact information")
+#             os.remove(temp_path)
+#             raise HTTPException(
+#                 status_code=400, 
+#                 detail="This image contains contact information (phone, email, social media, or URLs). Please remove any contact details from the image."
+#             )
         
-        logger.info("✅ Image passed moderation")
+#         logger.info("✅ Image passed moderation")
 
-        # STEP 6: OPTIMIZE AND PREPARE IMAGE FOR UPLOAD
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        user_id = current_user.get('id')
-        clean_filename = os.path.splitext(os.path.basename(filename).replace("..", ""))[0]
+#         # STEP 6: OPTIMIZE AND PREPARE IMAGE FOR UPLOAD
+#         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#         user_id = current_user.get('id')
+#         clean_filename = os.path.splitext(os.path.basename(filename).replace("..", ""))[0]
 
-        # Optimize image before upload
-        optimized_path = temp_path
-        try:
-            img = Image.open(temp_path)
+#         # Optimize image before upload
+#         optimized_path = temp_path
+#         try:
+#             img = Image.open(temp_path)
 
-            # Convert RGBA to RGB if needed
-            if img.mode == 'RGBA':
-                background = Image.new('RGB', img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[3])
-                img = background
+#             # Convert RGBA to RGB if needed
+#             if img.mode == 'RGBA':
+#                 background = Image.new('RGB', img.size, (255, 255, 255))
+#                 background.paste(img, mask=img.split()[3])
+#                 img = background
 
-            # Resize if too large (max 1920px width)
-            max_width = 1920
-            if img.width > max_width:
-                ratio = max_width / img.width
-                new_height = int(img.height * ratio)
-                img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+#             # Resize if too large (max 1920px width)
+#             max_width = 1920
+#             if img.width > max_width:
+#                 ratio = max_width / img.width
+#                 new_height = int(img.height * ratio)
+#                 img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
 
-            # Save optimized image to temp
-            optimized_path = temp_path.replace('.png', '.jpg').replace('.jpeg', '.jpg')
-            img.save(optimized_path, format='JPEG', quality=85, optimize=True)
-            logger.info(f"💾 Image optimized: {optimized_path}")
+#             # Save optimized image to temp
+#             optimized_path = temp_path.replace('.png', '.jpg').replace('.jpeg', '.jpg')
+#             img.save(optimized_path, format='JPEG', quality=85, optimize=True)
+#             logger.info(f"💾 Image optimized: {optimized_path}")
 
-        except Exception as e:
-            logger.warning(f"Image optimization failed, using original: {e}")
-            optimized_path = temp_path
+#         except Exception as e:
+#             logger.warning(f"Image optimization failed, using original: {e}")
+#             optimized_path = temp_path
 
-        # STEP 7: UPLOAD TO IMGBB
-        logger.info(f"☁️ Uploading to ImgBB...")
+#         # STEP 7: UPLOAD TO IMGBB
+#         logger.info(f"☁️ Uploading to ImgBB...")
 
-        try:
-            if not IMGBB_API_KEY:
-                raise HTTPException(
-                    status_code=500,
-                    detail="ImgBB API key not configured. Please contact administrator."
-                )
+#         try:
+#             if not IMGBB_API_KEY:
+#                 raise HTTPException(
+#                     status_code=500,
+#                     detail="ImgBB API key not configured. Please contact administrator."
+#                 )
 
-            # Read the optimized image file as base64
-            with open(optimized_path, 'rb') as img_file:
-                image_data = base64.b64encode(img_file.read()).decode('utf-8')
+#             # Read the optimized image file as base64
+#             with open(optimized_path, 'rb') as img_file:
+#                 image_data = base64.b64encode(img_file.read()).decode('utf-8')
 
-            # Upload to ImgBB
-            upload_data = {
-                'key': IMGBB_API_KEY,
-                'image': image_data,
-                'name': f"{user_id}_{timestamp}_{clean_filename}"
-            }
+#             # Upload to ImgBB
+#             upload_data = {
+#                 'key': IMGBB_API_KEY,
+#                 'image': image_data,
+#                 'name': f"{user_id}_{timestamp}_{clean_filename}"
+#             }
 
-            response = requests.post(IMGBB_UPLOAD_URL, data=upload_data, timeout=30)
-            response.raise_for_status()
+#             response = requests.post(IMGBB_UPLOAD_URL, data=upload_data, timeout=30)
+#             response.raise_for_status()
 
-            result = response.json()
+#             result = response.json()
 
-            if not result.get('success'):
-                raise Exception(f"ImgBB upload failed: {result.get('error', {}).get('message', 'Unknown error')}")
+#             if not result.get('success'):
+#                 raise Exception(f"ImgBB upload failed: {result.get('error', {}).get('message', 'Unknown error')}")
 
-            image_url = result['data']['url']
-            delete_url = result['data'].get('delete_url', '')
+#             image_url = result['data']['url']
+#             delete_url = result['data'].get('delete_url', '')
 
-            logger.info(f"✅ Image uploaded to ImgBB: {image_url}")
+#             logger.info(f"✅ Image uploaded to ImgBB: {image_url}")
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ ImgBB upload failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Image hosting service error: {str(e)}")
-        except Exception as e:
-            logger.error(f"❌ ImgBB upload failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Cloud storage upload failed: {str(e)}")
+#         except requests.exceptions.RequestException as e:
+#             logger.error(f"❌ ImgBB upload failed: {e}")
+#             raise HTTPException(status_code=500, detail=f"Image hosting service error: {str(e)}")
+#         except Exception as e:
+#             logger.error(f"❌ ImgBB upload failed: {e}")
+#             raise HTTPException(status_code=500, detail=f"Cloud storage upload failed: {str(e)}")
 
-        finally:
-            # Clean up temp files
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
-            if optimized_path != temp_path and os.path.exists(optimized_path):
-                os.remove(optimized_path)
+#         finally:
+#             # Clean up temp files
+#             if temp_path and os.path.exists(temp_path):
+#                 os.remove(temp_path)
+#             if optimized_path != temp_path and os.path.exists(optimized_path):
+#                 os.remove(optimized_path)
 
-        logger.info(f"✅ Image upload complete: {image_url}")
+#         logger.info(f"✅ Image upload complete: {image_url}")
 
-        return {
-            "success": True,
-            "image_url": image_url,
-            "filename": clean_filename,
-            "delete_url": delete_url
-        }
+#         return {
+#             "success": True,
+#             "image_url": image_url,
+#             "filename": clean_filename,
+#             "delete_url": delete_url
+#         }
         
-    except HTTPException:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise
+#     except HTTPException:
+#         if temp_path and os.path.exists(temp_path):
+#             os.remove(temp_path)
+#         raise
     
-    except Exception as e:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-        logger.error(f"Unexpected error during image upload: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+#     except Exception as e:
+#         if temp_path and os.path.exists(temp_path):
+#             os.remove(temp_path)
+#         logger.error(f"Unexpected error during image upload: {e}", exc_info=True)
+#         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @app.get("/uploads/project_images/{filename}")

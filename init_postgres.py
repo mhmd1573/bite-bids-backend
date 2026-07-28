@@ -40,12 +40,18 @@ class User(Base):
     status = Column(String(50), default="active", index=True)
 
     
-    # Developer fields
-    account_name = Column(String(255))
-    iban = Column(String(50))
-    swift_code = Column(String(20))
-    bank_name = Column(String(255))
     address = Column(Text)
+    
+    # ============================================
+    # ✅ BANK ACCOUNT FIELDS (Manual Bank Transfer)
+    # ============================================
+    bank_account_holder = Column(String(255), nullable=True)  # Full name on bank account
+    bank_name = Column(String(255), nullable=True)  # Bank institution name
+    bank_account_number = Column(String(255), nullable=True)  # Account number
+    bank_routing_number = Column(String(255), nullable=True)  # Routing/ABA number
+    bank_iban = Column(String(255), nullable=True)  # IBAN for international
+    bank_swift_code = Column(String(255), nullable=True)  # SWIFT/BIC code
+    bank_currency = Column(String(10), default='USD')  # Preferred payout currency
     
     # Profile
     avatar = Column(String(500))
@@ -169,9 +175,9 @@ class Bid(Base):
     
     # Bid details
     amount = Column(DECIMAL(12,2), nullable=False)
-    proposal = Column(Text, nullable=False)
-    timeline = Column(String(100), nullable=False)
-    estimated_hours = Column(Integer)
+    proposal = Column(Text, nullable=True)
+    timeline = Column(String(100), nullable=True)
+    estimated_hours = Column(Integer, nullable=True)
     
     # Status
     status = Column(String(50), default='pending', index=True)
@@ -405,8 +411,12 @@ class DeveloperPayout(Base):
     net_amount = Column(DECIMAL(12,2), nullable=False)
     currency = Column(String(10), default='USD')
 
-    stripe_transfer_id = Column(String(255), nullable=True)
-    stripe_transfer_status = Column(String(50), nullable=True)
+    # ============================================
+    # ✅ BANK TRANSFER FIELDS (Manual Bank Transfer)
+    # ============================================
+    bank_transfer_reference = Column(String(255), nullable=True)  # Admin's transfer reference
+    admin_notes = Column(Text, nullable=True)  # Notes about the transfer
+    payout_method = Column(String(50), default='bank_transfer')  # Tracks method used
 
     status = Column(String(50), default='pending', index=True)
 

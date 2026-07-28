@@ -5,6 +5,10 @@ from sqlalchemy import select, update, and_
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import json
+import os
+import asyncio
+import logging
 
 from app.database import get_db
 from app.models.payment import CheckoutSession, DeveloperPayout
@@ -12,6 +16,7 @@ from app.models.project import Project
 from app.models.user import User
 from app.models.bid import Bid
 from app.models.notification import Notification
+from app.models.chat import ChatRoom, ChatMessage
 from app.schemas.payment import StripeCheckoutRequest
 from app.core.dependencies import get_current_user
 from app.core.constants import PLATFORM_FEE_PERCENTAGE, PLATFORM_FIXED_FEE, PROJECT_POSTING_FEE
@@ -22,6 +27,11 @@ from app.services.notification_service import NotificationService
 from app.services.email_service import EmailService
 
 from app.config import settings
+
+# Setup logger
+logger = logging.getLogger(__name__)
+
+import stripe
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -43,7 +53,6 @@ async def create_post_project_payment_session(
         )
     
     try:
-        import stripe
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         customer_email = request.get('customer_email')
@@ -128,6 +137,7 @@ async def create_post_project_payment_session(
         }
         
     except Exception as e:
+        logger.error(f"Error creating post project session: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create payment session: {str(e)}")
 
 
@@ -148,7 +158,6 @@ async def create_stripe_checkout_session(
         )
     
     try:
-        import stripe
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         # Calculate fees
@@ -252,6 +261,7 @@ async def create_stripe_checkout_session(
         }
         
     except Exception as e:
+        logger.error(f"Error creating checkout session: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create checkout session: {str(e)}")
 
 
@@ -262,29 +272,42 @@ async def stripe_webhook(
 ):
     """
     Handle Stripe webhook events
+    This is called by Stripe when payment status changes
     """
+    
     payload = await request.body()
     sig_header = request.headers.get('stripe-signature')
     
-    webhook_secret = settings.STRIPE_WEBHOOK_SECRET
+    webhook_secret = settings.STRIPE_WEBHOOK_SECRET or os.getenv('STRIPE_WEBHOOK_SECRET')
+    
+    logger.info(f"📨 Webhook received. Signature header present: {bool(sig_header)}")
     
     try:
-        import stripe
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         event = stripe.Webhook.construct_event(
             payload, sig_header, webhook_secret
         ) if webhook_secret else json.loads(payload)
+        
+        logger.info(f"📋 Webhook event type: {event['type']}")
+        
     except ValueError as e:
+        logger.error(f"Invalid payload: {e}")
         raise HTTPException(status_code=400, detail="Invalid payload")
     except stripe.error.SignatureVerificationError as e:
+        logger.error(f"Invalid signature: {e}")
         raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     
     # Handle the event
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
+        session_id = session.get('id')
         
-        # Stripe metadata
+        logger.info(f"✅ Processing checkout.session.completed: {session_id}")
+        
         metadata = session.get('metadata', {}) or {}
         payment_type = metadata.get('payment_type')
         project_id_str = metadata.get('project_id')
@@ -296,9 +319,9 @@ async def stripe_webhook(
         amount_total = session.get('amount_total')
         amount_paid = (amount_total / 100.0) if amount_total is not None else float(metadata.get('amount', 0) or 0)
 
-        # Update checkout session record
+        # 1) Update checkout session record
         stmt = select(CheckoutSession).where(
-            CheckoutSession.session_id == session['id']
+            CheckoutSession.session_id == session_id
         )
         result = await db.execute(stmt)
         checkout_record = result.scalar_one_or_none()
@@ -307,10 +330,19 @@ async def stripe_webhook(
             checkout_record.status = 'completed'
             checkout_record.completed_at = datetime.utcnow()
             await db.commit()
+            logger.info(f"Payment completed for session: {session_id}")
+        else:
+            logger.warning(f"Checkout session {session_id} not found in database")
         
-        # Handle project posting payment
+        # ============================================
+        # Handle project posting payment ($0.99)
+        # ============================================
+      
         if payment_type == 'project_posting':
             user_id = metadata.get('user_id')
+            user_email = metadata.get('user_email')
+            
+            logger.info(f"🎯 Project posting payment verified for user {user_id}")
             
             if user_id:
                 try:
@@ -321,17 +353,20 @@ async def stripe_webhook(
                     user = user_result.scalar_one_or_none()
                     
                     if user:
-                        # Add 1 posting credit
-                        user.posting_credits = (user.posting_credits or 0) + 1
+                        old_credits = user.posting_credits or 0
+                        user.posting_credits = old_credits + 1
                         await db.commit()
+                        await db.refresh(user)
                         
-                        # Send notification
+                        logger.info(f"✅ Added posting credit. User {user.email}: {old_credits} → {user.posting_credits}")
+                        
+                        # ✅ CORRECT: Use NotificationService.send_notification_to_user
                         await NotificationService.send_notification_to_user(
                             user_id,
                             {
                                 "type": "payment_verified",
                                 "title": "Posting Credit Added! ✓",
-                                "message": f"You now have {user.posting_credits} posting credit(s). Ready to post your project!",
+                                "message": f"Payment successful! You now have {user.posting_credits} posting credit(s). Ready to post your project!",
                                 "link": "/dashboard",
                                 "details": {
                                     "payment_type": "project_posting",
@@ -342,52 +377,69 @@ async def stripe_webhook(
                             },
                             db
                         )
+                        logger.info(f"✅ Notification sent to user {user.email}")
+                        
+                    else:
+                        logger.error(f"❌ User {user_id} not found")
+                        
                 except Exception as e:
-                    pass
+                    logger.error(f"❌ Failed to add posting credit: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             return {"status": "success", "payment_type": "project_posting"}
 
-        # Handle project payment
+        # ============================================
+        # Handle project payment (auction/fixed price)
+        # ============================================
         project = None
         investor_user = None
         developer_user = None
 
-        if project_id_str:
-            project = await db.scalar(
-                select(Project).where(Project.id == uuid.UUID(project_id_str))
-            )
-        
-        if investor_id_str:
-            investor_user = await db.scalar(
-                select(User).where(User.id == uuid.UUID(investor_id_str))
-            )
-        
+        try:
+            if project_id_str:
+                project = await db.scalar(
+                    select(Project).where(Project.id == uuid.UUID(project_id_str))
+                )
+                logger.info(f"📁 Project found: {project.title if project else 'None'}")
+        except ValueError:
+            logger.warning(f"Invalid project_id in Stripe metadata: {project_id_str}")
+
+        try:
+            if investor_id_str:
+                investor_user = await db.scalar(
+                    select(User).where(User.id == uuid.UUID(investor_id_str))
+                )
+        except ValueError:
+            logger.warning(f"Invalid investor user_id in Stripe metadata: {investor_id_str}")
+
         if project and project.developer_id:
             developer_user = await db.scalar(
                 select(User).where(User.id == project.developer_id)
             )
 
-        # Update project status
         if project:
             if project.status == 'winner_selected':
                 project.status = 'in_progress'
             project.updated_at = datetime.utcnow()
             await db.commit()
+            logger.info(f"Project {project.id} status: {project.status} after payment")
 
-        # Mark notification as read
         if notification_id_str:
             try:
                 notif_uuid = uuid.UUID(notification_id_str)
-                await db.execute(
-                    update(Notification)
-                    .where(Notification.id == notif_uuid)
-                    .values(read=True, read_at=datetime.utcnow())
+                notif_result = await db.execute(
+                    select(Notification).where(Notification.id == notif_uuid)
                 )
-                await db.commit()
-            except:
-                pass
+                existing_notif = notif_result.scalar_one_or_none()
+                if existing_notif:
+                    existing_notif.read = True
+                    existing_notif.read_at = datetime.utcnow()
+                    await db.commit()
+                    logger.info(f"Notification {notification_id_str} marked as read after payment")
+            except ValueError:
+                logger.warning(f"Invalid notification_id in Stripe metadata: {notification_id_str}")
 
-        # Create notification for developer
         if project and developer_user:
             try:
                 formatted_amount = f"${amount_paid:,.2f}"
@@ -398,7 +450,8 @@ async def stripe_webhook(
                     message=(
                         f"The investor {investor_user.name if investor_user else 'a client'} "
                         f"has completed a payment of {formatted_amount} for your project "
-                        f"'{project.title}'. You can now start working on the project."
+                        f"'{project.title}'. You can now start working on the project. "
+                        f"Funds are held in BiteBids escrow."
                     ),
                     link=str(project.id),
                     details={
@@ -407,18 +460,24 @@ async def stripe_webhook(
                         "amount": float(amount_paid),
                         "winner_bid_id": winner_bid_id_str,
                         "investor_id": investor_id_str,
+                        "checkout_session_id": session_id,
+                        "payment_type": "project_payment",
+                        "platform_fee_percentage": PLATFORM_FEE_PERCENTAGE,
+                        "platform_fixed_fee": PLATFORM_FIXED_FEE,
                     },
                     read=False
                 )
                 db.add(dev_notif)
                 await db.commit()
-            except:
-                pass
+                logger.info(
+                    f"Developer notification created for payment (project={project.id}, developer={project.developer_id})"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create developer payment notification: {e}")
 
-        # Create chat room
+        # CREATE CHAT ROOM AFTER PAYMENT
         if project and project.developer_id and investor_id_str:
             try:
-                from app.models.chat import ChatRoom
                 room_result = await db.execute(
                     select(ChatRoom).where(
                         and_(
@@ -438,81 +497,107 @@ async def stripe_webhook(
                     )
                     
                     db.add(chat_room)
-                    await db.commit()
-                    await db.refresh(chat_room)
+                    await db.flush()
                     
-                    # System message
+                    formatted_amount = f"${amount_paid:,.2f}"
                     system_message = ChatMessage(
                         room_id=chat_room.id,
                         sender_id=project.developer_id,
-                        message=f"Payment of {formatted_amount} completed successfully! 🎉 Chat room is now active.",
+                        message=f"Payment of {formatted_amount} completed successfully! 🎉 Chat room is now active. You can start discussing the project.",
                         message_type="system"
                     )
+                    
                     db.add(system_message)
                     await db.commit()
                     
-                    # Send notifications
-                    await send_notification_to_user(
+                    logger.info(f"✅ Chat room created: {chat_room.id} for project {project.id} with investor {investor_id_str}")
+                    
+                    # ✅ CORRECT: Use NotificationService.send_notification_to_user
+                    await NotificationService.send_notification_to_user(
                         str(project.developer_id),
                         {
                             "type": "chat_room_created",
                             "title": "Chat Room Created! 💬",
-                            "message": f"Payment received! Chat room for '{project.title}' is now active.",
+                            "message": f"Payment received! Chat room for '{project.title}' is now active. Start collaborating with your investor!",
                             "link": f"/chat/{chat_room.id}",
                             "details": {
                                 "project_id": str(project.id),
                                 "room_id": str(chat_room.id),
                                 "amount": float(amount_paid),
+                                "investor_name": investor_user.name if investor_user else "Investor"
                             }
                         },
                         db
                     )
                     
-                    await send_notification_to_user(
+                    await NotificationService.send_notification_to_user(
                         investor_id_str,
                         {
                             "type": "chat_room_created",
                             "title": "Chat Room Created! 💬",
-                            "message": f"Payment successful! Chat room for '{project.title}' is now active.",
+                            "message": f"Payment successful! Chat room for '{project.title}' is now active. Start discussing with the developer!",
                             "link": f"/chat/{chat_room.id}",
                             "details": {
                                 "project_id": str(project.id),
                                 "room_id": str(chat_room.id),
                                 "amount": float(amount_paid),
+                                "developer_name": developer_user.name if developer_user else "Developer"
                             }
                         },
                         db
                     )
-            except:
-                pass
+                    
+                    logger.info(f"✅ Chat room notifications sent for room {chat_room.id}")
+                else:
+                    logger.info(f"ℹ️ Chat room already exists for project {project.id} with investor {investor_id_str}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to create chat room: {e}")
 
-        # Send confirmation emails
+        # Send emails
         try:
             project_title = project.title if project else "your project"
-            
+
             if investor_email:
-                await send_payment_confirmation_email(
-                    to_email=investor_email,
-                    project_title=project_title,
-                    amount=amount_paid,
-                    role="investor"
+                asyncio.create_task(
+                    EmailService.send_payment_confirmation_email(
+                        to_email=investor_email,
+                        project_title=project_title,
+                        amount=amount_paid,
+                        role="investor"
+                    )
                 )
-            
+            elif investor_user and investor_user.email:
+                asyncio.create_task(
+                    EmailService.send_payment_confirmation_email(
+                        to_email=investor_user.email,
+                        project_title=project_title,
+                        amount=amount_paid,
+                        role="investor"
+                    )
+                )
+
             if developer_user and developer_user.email:
-                await send_payment_confirmation_email(
-                    to_email=developer_user.email,
-                    project_title=project_title,
-                    amount=amount_paid,
-                    role="developer"
+                asyncio.create_task(
+                    EmailService.send_payment_confirmation_email(
+                        to_email=developer_user.email,
+                        project_title=project_title,
+                        amount=amount_paid,
+                        role="developer"
+                    )
                 )
-        except:
-            pass
+
+        except Exception as e:
+            logger.error(f"Failed to schedule payment confirmation emails: {e}")
     
     elif event['type'] == 'checkout.session.expired':
         session = event['data']['object']
+        session_id = session.get('id')
+        
+        logger.info(f"⏰ Checkout session expired: {session_id}")
         
         stmt = select(CheckoutSession).where(
-            CheckoutSession.session_id == session['id']
+            CheckoutSession.session_id == session_id
         )
         result = await db.execute(stmt)
         checkout_record = result.scalar_one_or_none()
@@ -520,6 +605,7 @@ async def stripe_webhook(
         if checkout_record:
             checkout_record.status = 'expired'
             await db.commit()
+            logger.info(f"Payment session expired: {session_id}")
     
     return {"status": "success"}
 
@@ -543,3 +629,73 @@ async def get_checkout_session(
         raise HTTPException(status_code=403, detail="Access denied")
     
     return model_to_dict(session)
+
+
+@router.get("/stripe/verify-session/{session_id}")
+async def verify_stripe_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Verify a Stripe checkout session status
+    """
+    try:
+        if not settings.STRIPE_SECRET_KEY:
+            raise HTTPException(
+                status_code=500, 
+                detail="Stripe is not configured. Please contact support."
+            )
+        
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        
+        session = stripe.checkout.Session.retrieve(session_id)
+        
+        query = select(CheckoutSession).where(CheckoutSession.session_id == session_id)
+        result = await db.execute(query)
+        checkout_record = result.scalar_one_or_none()
+        
+        if not checkout_record:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        if str(checkout_record.customer_id) != current_user.get('id'):
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        if session.payment_status == 'paid':
+            if checkout_record.status != 'completed':
+                checkout_record.status = 'completed'
+                checkout_record.completed_at = datetime.utcnow()
+                await db.commit()
+            
+            return {
+                "success": True, 
+                "payment_status": "completed",
+                "session": {
+                    "id": session.id,
+                    "amount_total": session.amount_total / 100 if session.amount_total else 0,
+                    "currency": session.currency,
+                    "customer_email": session.customer_email,
+                    "payment_status": session.payment_status,
+                    "status": session.status
+                }
+            }
+        
+        return {
+            "success": False,
+            "payment_status": session.payment_status,
+            "session": {
+                "id": session.id,
+                "amount_total": session.amount_total / 100 if session.amount_total else 0,
+                "currency": session.currency,
+                "customer_email": session.customer_email,
+                "payment_status": session.payment_status,
+                "status": session.status
+            }
+        }
+        
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {e}")
+        raise HTTPException(status_code=400, detail=f"Stripe error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Failed to verify session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to verify session: {str(e)}")

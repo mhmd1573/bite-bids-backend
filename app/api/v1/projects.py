@@ -1,7 +1,7 @@
 # app/api/v1/projects.py
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, and_
 from sqlalchemy.orm import joinedload
 import uuid
 from datetime import datetime, timedelta
@@ -25,16 +25,11 @@ from app.models.notification import Notification
 from app.models.chat import ChatRoom, ChatMessage
 from app.core.constants import PLATFORM_FEE_PERCENTAGE, PLATFORM_FIXED_FEE
 
-
-
-from app.services.payoneer_service import PayoneerService  # ✅ ADD THIS
-from app.services.notification_service import NotificationService  # ✅ ADD THIS
+from app.services.notification_service import NotificationService
+from app.config import settings
 
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
-
-payoneer_service = PayoneerService()
-
 
 
 # Setup logger
@@ -419,7 +414,7 @@ async def simple_approve_project(
 ):
     """
     Simplified project approval - investor confirms completion
-    ✅ UPDATED: Uses Payoneer for payouts instead of Stripe Connect
+    ✅ UPDATED: Uses manual bank transfer for payouts
     """
     try:
         # Get project
@@ -481,9 +476,16 @@ async def simple_approve_project(
         )
         checkout_session = checkout_result.scalar_one_or_none()
 
-        # ✅ CHECK: Developer has Payoneer set up
-        if not developer.payoneer_payee_id or not developer.payoneer_onboarding_completed:
-            # Create payout record as 'pending' but notify developer to set up Payoneer
+        # ✅ CHECK: Developer has bank details set up
+        has_bank_details = bool(
+            developer.bank_account_holder and 
+            developer.bank_name and 
+            developer.bank_account_number and 
+            developer.bank_routing_number
+        )
+        
+        if not has_bank_details:
+            # Create payout record as 'pending' but notify developer to add bank details
             payout_record = DeveloperPayout(
                 developer_id=project.developer_id,
                 project_id=project.id,
@@ -494,43 +496,62 @@ async def simple_approve_project(
                 net_amount=Decimal(str(developer_payout)),
                 currency='USD',
                 status='pending',
+                payout_method='bank_transfer',
                 description=f"Payment for project: {project.title}",
-                failure_reason="Payoneer account not set up"
+                failure_reason="Bank account details not set up"
             )
             db.add(payout_record)
             await db.commit()
             
-            # Notify developer to set up Payoneer
+            # Notify developer to set up bank details
             notification = Notification(
                 user_id=project.developer_id,
-                type='payoneer_setup_required',
-                title='⚠️ Payoneer Setup Required',
-                message=f'Your payout of ${developer_payout:.2f} is ready, but you need to connect your Payoneer account to receive it.',
+                type='bank_setup_required',
+                title='⚠️ Bank Details Required',
+                message=f'Your payout of ${developer_payout:.2f} is ready, but you need to add your bank account details to receive it.',
                 link='/payout-settings',
                 details={
                     'project_id': str(project.id),
                     'project_title': project.title,
                     'amount': float(developer_payout),
-                    'action_required': 'payoneer_setup'
+                    'action_required': 'bank_setup'
                 },
                 read=False
             )
             db.add(notification)
+            
+            # Notify admin about pending payout
+            admin_notification = Notification(
+                user_id=None,  # Will be sent to all admins
+                type='payout_pending',
+                title='💰 Payout Pending - Bank Details Needed',
+                message=f'Developer {developer.name} needs to add bank details to receive ${developer_payout:.2f} for project "{project.title}".',
+                link='/admin/payouts',
+                details={
+                    'project_id': str(project.id),
+                    'project_title': project.title,
+                    'developer_name': developer.name,
+                    'amount': float(developer_payout),
+                    'action_required': 'bank_setup'
+                },
+                read=False
+            )
+            db.add(admin_notification)
             await db.commit()
             
             return {
                 "success": True,
-                "message": "Project approved! Developer needs to set up Payoneer to receive payment.",
+                "message": "Project approved! Developer needs to add bank details to receive payment.",
                 "project_id": str(project.id),
                 "project_status": project.status,
                 "developer_payout": float(developer_payout),
                 "platform_commission": float(platform_fee),
                 "gross_amount": float(project_amount),
-                "action_required": "payoneer_setup",
+                "action_required": "bank_setup",
                 "notification_sent": True
             }
 
-        # ✅ CREATE PAYOUT RECORD (with Payoneer transfer)
+        # ✅ CREATE PAYOUT RECORD (pending - admin will process bank transfer)
         payout_record = DeveloperPayout(
             developer_id=project.developer_id,
             project_id=project.id,
@@ -541,89 +562,11 @@ async def simple_approve_project(
             net_amount=Decimal(str(developer_payout)),
             currency='USD',
             status='pending',
+            payout_method='bank_transfer',
             description=f"Payment for project: {project.title}"
         )
         db.add(payout_record)
         await db.flush()
-
-        # ✅ INITIATE PAYONEER TRANSFER
-        try:
-            payoneer_result = await payoneer_service.initiate_payout(
-                payee_id=developer.payoneer_payee_id,
-                amount=developer_payout,
-                currency='USD',
-                description=f"Payment for project: {project.title}",
-                reference_id=str(payout_record.id)
-            )
-
-            if payoneer_result.get("success"):
-                # Update payout with Payoneer transfer details
-                payout_record.payoneer_transfer_id = payoneer_result.get("transfer_id")
-                payout_record.payoneer_transfer_status = payoneer_result.get("status", "pending")
-                payout_record.payoneer_quote_id = payoneer_result.get("quote_id")
-                payout_record.payoneer_batch_id = payoneer_result.get("batch_id")
-                payout_record.status = 'processing'
-                payout_record.transaction_id = payoneer_result.get("transfer_id")
-                
-                logger.info(f"✅ Payoneer transfer initiated: {payoneer_result.get('transfer_id')} for payout {payout_record.id}")
-            else:
-                # Payoneer transfer failed - mark as failed
-                payout_record.status = 'failed'
-                payout_record.failure_reason = payoneer_result.get("error", "Payoneer transfer failed")
-                logger.error(f"❌ Payoneer transfer failed: {payoneer_result.get('error')}")
-                
-                # Still commit the project approval but notify admin
-                await db.commit()
-                
-                # Notify admin about failure
-                await _notify_admin_payoneer_failure(
-                    project_id=str(project.id),
-                    project_title=project.title,
-                    developer_name=developer.name,
-                    developer_email=developer.email,
-                    amount=developer_payout,
-                    error=payoneer_result.get("error", "Unknown error")
-                )
-                
-                return {
-                    "success": True,
-                    "message": "Project approved but Payoneer transfer failed. Admin has been notified.",
-                    "project_id": str(project.id),
-                    "project_status": project.status,
-                    "developer_payout": float(developer_payout),
-                    "platform_commission": float(platform_fee),
-                    "gross_amount": float(project_amount),
-                    "payoneer_status": "failed",
-                    "failure_reason": payoneer_result.get("error", "Unknown error")
-                }
-
-        except Exception as payoneer_error:
-            logger.error(f"❌ Payoneer error: {payoneer_error}")
-            payout_record.status = 'failed'
-            payout_record.failure_reason = str(payoneer_error)
-            await db.commit()
-            
-            # Notify admin
-            await _notify_admin_payoneer_failure(
-                project_id=str(project.id),
-                project_title=project.title,
-                developer_name=developer.name,
-                developer_email=developer.email,
-                amount=developer_payout,
-                error=str(payoneer_error)
-            )
-            
-            return {
-                "success": True,
-                "message": "Project approved but Payoneer transfer failed. Admin has been notified.",
-                "project_id": str(project.id),
-                "project_status": project.status,
-                "developer_payout": float(developer_payout),
-                "platform_commission": float(platform_fee),
-                "gross_amount": float(project_amount),
-                "payoneer_status": "failed",
-                "failure_reason": str(payoneer_error)
-            }
 
         # ✅ COMMIT ALL CHANGES
         await db.commit()
@@ -635,7 +578,7 @@ async def simple_approve_project(
             user_id=project.developer_id,
             type='project_approved',
             title='🎉 Project Approved!',
-            message=f'Your project "{project.title}" has been approved by the investor. Payment of ${developer_payout:.2f} is being processed via Payoneer.',
+            message=f'Your project "{project.title}" has been approved by the investor. Payment of ${developer_payout:.2f} is pending and will be processed via bank transfer.',
             link=f"/projects/{project_id}",
             details={
                 'project_id': str(project.id),
@@ -643,11 +586,29 @@ async def simple_approve_project(
                 'amount': float(developer_payout),
                 'platform_fee': float(platform_fee),
                 'gross_amount': float(project_amount),
-                'payoneer_transfer_id': payout_record.payoneer_transfer_id
+                'payout_method': 'bank_transfer'
             },
             read=False
         )
         db.add(dev_notification)
+
+        # ✅ NOTIFY ADMIN ABOUT PENDING PAYOUT
+        admin_notification = Notification(
+            user_id=None,
+            type='payout_pending',
+            title='💰 New Payout Pending',
+            message=f'Developer {developer.name} has a pending payout of ${developer_payout:.2f} for project "{project.title}". Please process the bank transfer.',
+            link='/admin/payouts',
+            details={
+                'project_id': str(project.id),
+                'project_title': project.title,
+                'developer_name': developer.name,
+                'amount': float(developer_payout),
+                'payout_method': 'bank_transfer'
+            },
+            read=False
+        )
+        db.add(admin_notification)
 
         # ✅ SEND SYSTEM MESSAGE TO CHAT
         try:
@@ -671,8 +632,8 @@ async def simple_approve_project(
                            f"• Gross Amount: ${project_amount:.2f}\n" +
                            f"• Platform Fee (6%): ${platform_fee:.2f}\n" +
                            f"• Developer Payout: ${developer_payout:.2f}\n\n" +
-                           f"💳 Payment is being processed via Payoneer.\n" +
-                           f"Transfer ID: {payout_record.payoneer_transfer_id or 'Pending'}",
+                           f"💳 Payment is pending and will be processed via bank transfer.\n" +
+                           f"An admin will process the transfer shortly.",
                     message_type='system',
                     created_at=datetime.utcnow()
                 )
@@ -690,7 +651,7 @@ async def simple_approve_project(
                 {
                     "type": "project_approved",
                     "title": "🎉 Project Approved!",
-                    "message": f"Your project \"{project.title}\" has been approved! Payment of ${developer_payout:.2f} is being processed via Payoneer.",
+                    "message": f"Your project \"{project.title}\" has been approved! Payment of ${developer_payout:.2f} is pending bank transfer.",
                     "link": f"/projects/{project_id}",
                     "details": {
                         'project_id': str(project.id),
@@ -698,7 +659,7 @@ async def simple_approve_project(
                         'amount': float(developer_payout),
                         'platform_fee': float(platform_fee),
                         'gross_amount': float(project_amount),
-                        'payoneer_transfer_id': payout_record.payoneer_transfer_id
+                        'payout_method': 'bank_transfer'
                     }
                 },
                 db
@@ -716,8 +677,7 @@ async def simple_approve_project(
                     project_title=project.title,
                     amount=developer_payout,
                     platform_fee=platform_fee,
-                    gross_amount=project_amount,
-                    payoneer_transfer_id=payout_record.payoneer_transfer_id
+                    gross_amount=project_amount
                 )
             )
             logger.info(f"✅ Project approval email queued for {developer.email}")
@@ -728,14 +688,13 @@ async def simple_approve_project(
         
         return {
             "success": True,
-            "message": "Project approved successfully! Payment is being processed via Payoneer.",
+            "message": "Project approved successfully! Payment is pending and will be processed via bank transfer.",
             "project_id": str(project.id),
             "project_status": project.status,
             "developer_payout": float(developer_payout),
             "platform_commission": float(platform_fee),
             "gross_amount": float(project_amount),
-            "payoneer_transfer_id": payout_record.payoneer_transfer_id,
-            "payoneer_status": payout_record.payoneer_transfer_status,
+            "payout_method": "bank_transfer",
             "notification_sent": True,
             "email_sent": True
         }
@@ -755,19 +714,18 @@ async def simple_approve_project(
 # HELPER FUNCTIONS
 # ============================================
 
-async def _notify_admin_payoneer_failure(
-    project_id: str,
-    project_title: str,
-    developer_name: str,
-    developer_email: str,
-    amount: float,
-    error: str
-):
-    """Notify admin about Payoneer transfer failure"""
+async def send_admin_project_notification(action, project_id, project_title, developer_name, developer_email, project_data):
+    """Send admin notification about project changes"""
     try:
         admin_email = settings.ADMIN_EMAIL or "bitebids@gmail.com"
         
-        subject = f"⚠️ Payoneer Transfer Failed - {project_title}"
+        action_labels = {
+            'created': 'New Project Created',
+            'updated': 'Project Updated',
+            'deleted': 'Project Deleted'
+        }
+        
+        subject = f"{action_labels.get(action, 'Project Notification')} - {project_title}"
         
         html_content = f"""
         <!DOCTYPE html>
@@ -775,28 +733,23 @@ async def _notify_admin_payoneer_failure(
         <head>
             <style>
                 body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
-                .header {{ background: #ef4444; color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center; }}
+                .header {{ background: #2563eb; color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center; }}
                 .content {{ background: #f8fafc; padding: 30px; border: 1px solid #e0e0e0; }}
                 .detail {{ padding: 10px 0; border-bottom: 1px solid #e5e7eb; }}
             </style>
         </head>
         <body>
             <div class="header">
-                <h1>⚠️ Payoneer Transfer Failed</h1>
+                <h1>{action_labels.get(action, 'Project Notification')}</h1>
             </div>
             <div class="content">
-                <h2>Project: {project_title}</h2>
+                <h2>{project_title}</h2>
                 <div class="detail"><strong>Project ID:</strong> {project_id}</div>
                 <div class="detail"><strong>Developer:</strong> {developer_name} ({developer_email})</div>
-                <div class="detail"><strong>Amount:</strong> ${amount:.2f}</div>
-                <div class="detail"><strong>Error:</strong> {error}</div>
-                <p style="margin-top: 20px;">
-                    Please check the Payoneer dashboard and retry the payout manually if needed.
-                </p>
-                <a href="{settings.FRONTEND_URL}/admin/payouts" 
-                   style="display:inline-block; background:#ef4444; color:white; padding:12px 24px; border-radius:6px; text-decoration:none; margin-top:15px;">
-                    View Payouts
-                </a>
+                <div class="detail"><strong>Category:</strong> {project_data.get('category', 'N/A')}</div>
+                <div class="detail"><strong>Budget:</strong> ${project_data.get('budget', 0):.2f}</div>
+                <div class="detail"><strong>Status:</strong> {project_data.get('status', 'N/A')}</div>
+                <div class="detail"><strong>Location:</strong> {project_data.get('location', 'N/A')}</div>
             </div>
         </body>
         </html>
@@ -807,7 +760,67 @@ async def _notify_admin_payoneer_failure(
             subject=subject,
             html_content=html_content
         )
-        logger.info(f"📧 Admin notification sent for Payoneer failure on {project_title}")
+        logger.info(f"📧 Admin notification sent for {action} on {project_title}")
         
     except Exception as e:
-        logger.error(f"Failed to notify admin about Payoneer failure: {e}")
+        logger.error(f"Failed to send admin notification: {e}")
+
+
+async def send_project_approved_email(to_email, developer_name, project_title, amount, platform_fee, gross_amount):
+    """Send project approval email to developer"""
+    try:
+        subject = f"🎉 Project Approved! - {project_title}"
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: linear-gradient(135deg, #059669, #10b981); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center; }}
+                .content {{ background: #f8fafc; padding: 30px; border: 1px solid #e0e0e0; }}
+                .amount-box {{ background: #ecfdf5; border: 2px solid #10b981; border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0; }}
+                .amount {{ font-size: 36px; font-weight: bold; color: #059669; }}
+                .detail {{ padding: 10px 0; border-bottom: 1px solid #e5e7eb; }}
+                .footer {{ text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>🎉 Project Approved!</h1>
+            </div>
+            <div class="content">
+                <h2>Congratulations, {developer_name}!</h2>
+                <p>Your project "{project_title}" has been approved by the investor.</p>
+                
+                <div class="amount-box">
+                    <p style="margin: 0; color: #6b7280;">Your Payout</p>
+                    <div class="amount">${amount:.2f}</div>
+                    <p style="margin: 5px 0 0; color: #6b7280; font-size: 14px;">via Bank Transfer</p>
+                </div>
+                
+                <div class="detail"><strong>Gross Amount:</strong> ${gross_amount:.2f}</div>
+                <div class="detail"><strong>Platform Fee (6%):</strong> -${platform_fee:.2f}</div>
+                <div class="detail"><strong>Net Payout:</strong> ${amount:.2f}</div>
+                
+                <p style="margin-top: 20px;">
+                    Your payment is pending and will be processed via bank transfer. 
+                    An admin will initiate the transfer to your bank account shortly.
+                </p>
+            </div>
+            <div class="footer">
+                <p>© 2026 BiteBids. All rights reserved.</p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        await EmailService.send_email(
+            to_email=to_email,
+            subject=subject,
+            html_content=html_content
+        )
+        logger.info(f"📧 Project approval email sent to {to_email}")
+        
+    except Exception as e:
+        logger.error(f"Failed to send project approval email: {e}")
