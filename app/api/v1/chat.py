@@ -219,6 +219,91 @@ async def get_chat_room(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# @router.post("/rooms/{room_id}/messages")
+# async def send_chat_message(
+#     room_id: str,
+#     message_data: ChatMessageCreate,
+#     background_tasks: BackgroundTasks,
+#     db: AsyncSession = Depends(get_db),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """Send a chat message with optional moderation"""
+#     try:
+#         user_id = uuid.UUID(current_user['id'])
+#         message_text = message_data.message.strip() if message_data.message else ""
+
+#         if not message_text and not message_data.file_url:
+#             raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+#         # Verify room exists and user is a participant
+#         room_query = select(ChatRoom).where(ChatRoom.id == uuid.UUID(room_id))
+#         result = await db.execute(room_query)
+#         room = result.scalar_one_or_none()
+        
+#         if not room:
+#             raise HTTPException(status_code=404, detail="Chat room not found")
+        
+#         if user_id not in [room.developer_id, room.investor_id]:
+#             raise HTTPException(status_code=403, detail="Not a participant in this chat")
+        
+#         # Create message with pending moderation status
+#         new_message = ChatMessage(
+#             room_id=uuid.UUID(room_id),
+#             sender_id=user_id,
+#             message=message_text if message_text else None,
+#             file_url=message_data.file_url,
+#             file_name=message_data.file_name,
+#             file_size=message_data.file_size,
+#             file_type=message_data.file_type,
+#             message_type=message_data.message_type or "text",
+#             moderation_status='pending',
+#             flagged=False
+#         )
+#         db.add(new_message)
+
+#         recipient_id = room.investor_id if user_id == room.developer_id else room.developer_id
+
+#         # Update room's updated_at
+#         room.updated_at = datetime.utcnow()
+
+#         await db.commit()
+#         await db.refresh(new_message)
+
+#         message_dict = model_to_dict(new_message)
+
+#         # Send via WebSocket IMMEDIATELY
+#         await manager.send_chat_message(room_id, message_dict)
+
+#         # Schedule background moderation for text messages
+#         if message_text:
+#             from app.services.moderation_service import moderate_message_async
+#             background_tasks.add_task(
+#                 moderate_message_async,
+#                 str(new_message.id),
+#                 message_text,
+#                 room_id,
+#                 str(user_id),
+#                 current_user['email']
+#             )
+
+#         if recipient_id:
+#             # Update unread count
+#             total_unread = await get_total_unread_chat_count(db, recipient_id)
+#             await manager.send_ws_event(
+#                 str(recipient_id),
+#                 {
+#                     "type": "chat_unread_count",
+#                     "total_unread_count": total_unread,
+#                     "room_id": room_id
+#                 }
+#             )
+        
+#         return message_dict
+        
+#     except Exception as e:
+#         await db.rollback()
+#         raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/rooms/{room_id}/messages")
 async def send_chat_message(
     room_id: str,
@@ -274,16 +359,12 @@ async def send_chat_message(
         # Send via WebSocket IMMEDIATELY
         await manager.send_chat_message(room_id, message_dict)
 
-        # Schedule background moderation for text messages
+        # ✅ FIXED: Use moderate_chat_message directly (it already exists!)
         if message_text:
-            from app.services.moderation_service import moderate_message_async
+            from app.services.moderation_service import ModerationService
             background_tasks.add_task(
-                moderate_message_async,
-                str(new_message.id),
-                message_text,
-                room_id,
-                str(user_id),
-                current_user['email']
+                ModerationService.moderate_chat_message,
+                message_text
             )
 
         if recipient_id:
@@ -303,6 +384,7 @@ async def send_chat_message(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/rooms/{room_id}/messages")
