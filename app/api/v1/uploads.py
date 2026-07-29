@@ -11,6 +11,9 @@ from datetime import datetime
 from PIL import Image
 import boto3
 from botocore.config import Config
+import zipfile
+import io
+import tempfile
 
 from app.database import get_db
 from app.models.chat import ChatRoom
@@ -222,6 +225,141 @@ async def get_upload_info(
                 "status": upload.status
             }
         }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/file-content/{room_id}")
+async def get_uploaded_file_content(
+    room_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Read a specific file's content from the uploaded ZIP in R2 cloud storage.
+    This is used by the "Cloud View" feature so investors can browse files
+    without downloading the entire project.
+    """
+    try:
+        if not r2_client:
+            raise HTTPException(status_code=503, detail="Cloud storage not configured")
+
+        user_id = uuid.UUID(current_user["id"])
+        user_role = current_user.get("role", "")
+        room_uuid = uuid.UUID(room_id)
+
+        # Get request body
+        body = await request.json()
+        file_path = body.get("file_path")
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+
+        # Get chat room
+        room_query = await db.execute(
+            select(ChatRoom).where(ChatRoom.id == room_uuid)
+        )
+        room = room_query.scalar_one_or_none()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # Authorization check
+        if user_role != "admin" and user_id not in [room.developer_id, room.investor_id]:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get upload record
+        upload_query = await db.execute(
+            select(ProjectUpload).where(ProjectUpload.room_id == room_uuid)
+        )
+        upload = upload_query.scalar_one_or_none()
+
+        if not upload:
+            raise HTTPException(status_code=404, detail="No uploaded project found")
+
+        # Generate a presigned URL to download the ZIP
+        presigned_url = r2_client.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': settings.R2_BUCKET_NAME,
+                'Key': upload.file_key,
+            },
+            ExpiresIn=300  # 5 minutes
+        )
+
+        # Download the ZIP file from R2
+        zip_response = requests.get(presigned_url, timeout=30)
+        if zip_response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to download project archive from cloud storage")
+
+        # Read the ZIP file from memory
+        try:
+            zip_data = io.BytesIO(zip_response.content)
+            with zipfile.ZipFile(zip_data, 'r') as zf:
+                # List all files in the ZIP to find the matching one
+                all_files = zf.namelist()
+                
+                # Find the file that matches the requested path
+                # The file_path comes from the file tree which uses relative paths
+                # ZIP entries may have the full webkitRelativePath or just the relative path
+                matched_file = None
+                for zip_entry in all_files:
+                    # Check if the entry ends with the requested file_path
+                    if zip_entry.endswith(file_path) or zip_entry == file_path:
+                        matched_file = zip_entry
+                        break
+                    # Also check if the entry contains the file_path somewhere
+                    if f"/{file_path}" in zip_entry or zip_entry == file_path:
+                        matched_file = zip_entry
+                        break
+                
+                if not matched_file:
+                    # Try a more flexible search - look for the filename at the end
+                    file_name_only = file_path.split('/')[-1]
+                    for zip_entry in all_files:
+                        if zip_entry.endswith(f"/{file_name_only}") or zip_entry == file_name_only:
+                            matched_file = zip_entry
+                            break
+                
+                if not matched_file:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"File '{file_path}' not found in the uploaded project archive"
+                    )
+                
+                # Check if it's a directory
+                info = zf.getinfo(matched_file)
+                if info.is_dir():
+                    raise HTTPException(status_code=400, detail="Cannot read a directory as file content")
+                
+                # Read the file content
+                with zf.open(matched_file, 'r') as f:
+                    content_bytes = f.read()
+                
+                # Try to decode as text
+                try:
+                    content = content_bytes.decode('utf-8')
+                except UnicodeDecodeError:
+                    try:
+                        content = content_bytes.decode('latin-1')
+                    except:
+                        # If it's binary, return a message
+                        content = f"[Binary file: {file_name_only} - {len(content_bytes)} bytes]"
+                
+                return {
+                    "success": True,
+                    "content": content,
+                    "file_path": file_path,
+                    "matched_zip_path": matched_file
+                }
+
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=500, detail="Invalid or corrupted project archive")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error reading file from archive: {str(e)}")
 
     except HTTPException:
         raise
