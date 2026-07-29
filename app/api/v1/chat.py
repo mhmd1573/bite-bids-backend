@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models.chat import ChatRoom, ChatMessage
 from app.models.project import Project
 from app.models.user import User
-from app.models.payment import CheckoutSession
+from app.models.payment import CheckoutSession, DeveloperPayout
 from app.models.notification import Notification
 from app.schemas.chat import ChatMessageCreate
 from app.core.dependencies import get_current_user, get_current_admin
@@ -690,6 +690,85 @@ async def mark_message_as_read(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rooms/{room_id}/pending-payout")
+async def get_pending_payout(
+    room_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    ✅ Get pending payout for a chat room - SOURCE OF TRUTH for project confirmation
+    This endpoint checks if a payout record exists, which means the investor confirmed the project.
+    """
+    try:
+        user_id = uuid.UUID(current_user["id"])
+        
+        # Get the room
+        room_query = await db.execute(
+            select(ChatRoom).where(ChatRoom.id == uuid.UUID(room_id))
+        )
+        room = room_query.scalar_one_or_none()
+        
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+        
+        # Verify user is a participant
+        if user_id not in [room.developer_id, room.investor_id]:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get the project
+        project_query = await db.execute(
+            select(Project).where(Project.id == room.project_id)
+        )
+        project = project_query.scalar_one_or_none()
+        
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # ✅ Check for existing payout record (this is the source of truth)
+        from app.models.payment import DeveloperPayout  # Make sure this import exists
+        
+        payout_query = await db.execute(
+            select(DeveloperPayout).where(
+                and_(
+                    DeveloperPayout.project_id == project.id,
+                    DeveloperPayout.developer_id == project.developer_id
+                )
+            ).order_by(DeveloperPayout.created_at.desc())
+        )
+        payout = payout_query.scalar_one_or_none()
+        
+        if payout:
+            # ✅ Payout exists = project has been confirmed
+            return {
+                "has_pending_payout": True,
+                "payout": {
+                    "id": str(payout.id),
+                    "gross_amount": float(payout.gross_amount),
+                    "platform_fee": float(payout.platform_fee),
+                    "net_amount": float(payout.net_amount),
+                    "status": payout.status,  # 'pending', 'processing', 'completed', 'failed'
+                    "payout_method": payout.payout_method,
+                    "created_at": payout.created_at.isoformat() if payout.created_at else None,
+                    "failure_reason": payout.failure_reason
+                },
+                "project_status": project.status
+            }
+        else:
+            # ✅ No payout = project not confirmed yet
+            return {
+                "has_pending_payout": False,
+                "payout": None,
+                "project_status": project.status
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching pending payout: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get payout status: {str(e)}")
 
 
 # Helper function
