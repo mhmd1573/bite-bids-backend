@@ -228,8 +228,26 @@ async def get_repo_structure(
 
         encrypted_token = repo_record.encrypted_access_token if repo_record else None
 
+        # Get repository default branch
+        branch = fetch_github_default_branch(
+            parsed['owner'],
+            parsed['repo'],
+            encrypted_token
+        )
+
+        if not branch:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not determine repository default branch"
+            )
+
         # Fetch tree
-        tree = fetch_github_tree(parsed['owner'], parsed['repo'], encrypted_token=encrypted_token)
+        tree = fetch_github_tree(
+            parsed['owner'],
+            parsed['repo'],
+            branch=branch,
+            encrypted_token=encrypted_token
+        )
 
         if tree is None:
             raise HTTPException(status_code=404, detail="Could not fetch repository structure. Repository may be private or rate limit exceeded.")
@@ -291,11 +309,23 @@ async def get_file_content(
 
         encrypted_token = repo_record.encrypted_access_token if repo_record else None
 
-        # Fetch file content
+        branch = fetch_github_default_branch(
+            parsed['owner'],
+            parsed['repo'],
+            encrypted_token
+        )
+
+        if not branch:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not determine repository default branch"
+            )
+
         content = fetch_github_file_content(
             parsed['owner'],
             parsed['repo'],
             file_path,
+            branch=branch,
             encrypted_token=encrypted_token
         )
 
@@ -559,7 +589,44 @@ def build_tree_structure(items: List[Dict]) -> List[Dict]:
     return root_items
 
 
-def fetch_github_tree(owner: str, repo: str, branch: str = "main", encrypted_token: str = None) -> Optional[List[Dict]]:
+def fetch_github_default_branch(
+    owner: str,
+    repo: str,
+    encrypted_token: str = None
+) -> Optional[str]:
+    """Fetch repository default branch from GitHub"""
+
+    try:
+        url = f"https://api.github.com/repos/{owner}/{repo}"
+
+        headers = get_github_headers()
+
+        if encrypted_token:
+            token = decrypt_token(encrypted_token)
+            headers["Authorization"] = f"token {token}"
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+
+        return data.get("default_branch")
+
+    except Exception:
+        return None
+
+def fetch_github_tree(    
+    owner: str,
+    repo: str,
+    branch: str,
+    encrypted_token: str = None
+) -> Optional[List[Dict]]:
     """Fetch repository tree structure from GitHub API"""
     try:
         url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
@@ -573,11 +640,6 @@ def fetch_github_tree(owner: str, repo: str, branch: str = "main", encrypted_tok
                 return None
 
         response = requests.get(url, headers=headers, timeout=15)
-
-        # Try master branch if main doesn't exist
-        if response.status_code == 404:
-            url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/master?recursive=1"
-            response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code == 401:
             return None
