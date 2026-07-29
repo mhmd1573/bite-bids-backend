@@ -31,6 +31,111 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 
+# @router.get("/dashboard")
+# async def admin_dashboard(
+#     admin = Depends(get_current_admin),
+#     db: AsyncSession = Depends(get_db)
+# ):
+#     """Admin dashboard statistics"""
+#     try:
+#         # User statistics
+#         total_users_result = await db.execute(select(func.count(User.id)))
+#         total_users = total_users_result.scalar()
+        
+#         developers_result = await db.execute(select(func.count(User.id)).where(User.role == "developer"))
+#         developers = developers_result.scalar()
+        
+#         investors_result = await db.execute(select(func.count(User.id)).where(User.role == "investor"))
+#         investors = investors_result.scalar()
+        
+#         # Project statistics
+#         total_projects_result = await db.execute(select(func.count(Project.id)))
+#         total_projects = total_projects_result.scalar()
+        
+#         active_projects_result = await db.execute(select(func.count(Project.id)).where(Project.status != "closed"))
+#         active_projects = active_projects_result.scalar()
+        
+#         # Disputes statistics
+#         total_disputes_result = await db.execute(select(func.count(ProjectDisputeSimple.id)))
+#         total_disputes = total_disputes_result.scalar()
+        
+#         active_disputes_result = await db.execute(
+#             select(func.count(ProjectDisputeSimple.id)).where(ProjectDisputeSimple.resolved == False)
+#         )
+#         active_disputes = active_disputes_result.scalar()
+        
+#         # Revenue - fix this query
+#         # If User.total_earnings doesn't exist, you might need to sum from payments table
+#         total_revenue_result = await db.execute(select(func.sum(User.total_earnings)))
+#         total_revenue = float(total_revenue_result.scalar() or 0)
+        
+#         # Recent activity - manually convert to dict
+#         recent_users_result = await db.execute(
+#             select(User).order_by(User.created_at.desc()).limit(5)
+#         )
+#         recent_users = recent_users_result.scalars().all()
+        
+#         recent_projects_result = await db.execute(
+#             select(Project).order_by(Project.created_at.desc()).limit(5)
+#         )
+#         recent_projects = recent_projects_result.scalars().all()
+        
+#         # Convert users manually
+#         users_list = []
+#         for user in recent_users:
+#             users_list.append({
+#                 "id": str(user.id),
+#                 "email": user.email,
+#                 "name": user.name,
+#                 "role": user.role,
+#                 "created_at": user.created_at.isoformat() if user.created_at else None
+#             })
+        
+#         # Convert projects manually
+#         projects_list = []
+#         for project in recent_projects:
+#             projects_list.append({
+#                 "id": str(project.id),
+#                 "title": project.title,
+#                 "status": project.status,
+#                 "created_at": project.created_at.isoformat() if project.created_at else None
+#             })
+        
+#         return {
+#             "stats": {
+#                 "users": {
+#                     "total": total_users or 0,
+#                     "developers": developers or 0,
+#                     "investors": investors or 0
+#                 },
+#                 "projects": {
+#                     "total": total_projects or 0,
+#                     "active": active_projects or 0
+#                 },
+#                 "disputes": {
+#                     "total": total_disputes or 0,
+#                     "active": active_disputes or 0
+#                 },
+#                 "payments": {
+#                     "total_revenue": total_revenue,
+#                     "pending_payments": 0,
+#                     "completed_transactions": 0
+#                 }
+#             },
+#             "recent_activity": {
+#                 "users": users_list,
+#                 "projects": projects_list
+#             }
+#         }
+#     except Exception as e:
+#         print(f"Error in admin_dashboard: {str(e)}")  # Add logging
+#         print(f"Error type: {type(e)}")  # Add logging
+#         import traceback
+#         traceback.print_exc()  # Print full traceback
+#         raise HTTPException(status_code=500, detail=f"Failed to load admin dashboard: {str(e)}")
+
+
+
 @router.get("/dashboard")
 async def admin_dashboard(
     admin = Depends(get_current_admin),
@@ -64,10 +169,34 @@ async def admin_dashboard(
         )
         active_disputes = active_disputes_result.scalar()
         
-        # Revenue - fix this query
-        # If User.total_earnings doesn't exist, you might need to sum from payments table
-        total_revenue_result = await db.execute(select(func.sum(User.total_earnings)))
+        # ✅ CORRECT: Sum platform fees from DeveloperPayout table
+        # This gives us the actual platform revenue (6% of each project)
+        total_revenue_result = await db.execute(
+            select(func.sum(DeveloperPayout.platform_fee))
+            .where(DeveloperPayout.status.in_(['completed', 'processing']))
+        )
         total_revenue = float(total_revenue_result.scalar() or 0)
+        
+        # ✅ Pending revenue (approved projects waiting for payout)
+        pending_revenue_result = await db.execute(
+            select(func.sum(DeveloperPayout.platform_fee))
+            .where(DeveloperPayout.status == 'pending')
+        )
+        pending_revenue = float(pending_revenue_result.scalar() or 0)
+        
+        # ✅ Completed transactions count
+        completed_transactions_result = await db.execute(
+            select(func.count(DeveloperPayout.id))
+            .where(DeveloperPayout.status == 'completed')
+        )
+        completed_transactions = completed_transactions_result.scalar() or 0
+        
+        # ✅ Total transaction volume (all money flowing through platform)
+        total_volume_result = await db.execute(
+            select(func.sum(DeveloperPayout.gross_amount))
+            .where(DeveloperPayout.status.in_(['pending', 'processing', 'completed']))
+        )
+        total_volume = float(total_volume_result.scalar() or 0)
         
         # Recent activity - manually convert to dict
         recent_users_result = await db.execute(
@@ -117,9 +246,10 @@ async def admin_dashboard(
                     "active": active_disputes or 0
                 },
                 "payments": {
-                    "total_revenue": total_revenue,
-                    "pending_payments": 0,
-                    "completed_transactions": 0
+                    "total_revenue": total_revenue,  # ✅ Platform's actual revenue (6% fees)
+                    "pending_revenue": pending_revenue,  # ✅ Pending platform fees
+                    "total_volume": total_volume,  # ✅ Total transaction volume
+                    "completed_transactions": completed_transactions
                 }
             },
             "recent_activity": {
@@ -128,12 +258,10 @@ async def admin_dashboard(
             }
         }
     except Exception as e:
-        print(f"Error in admin_dashboard: {str(e)}")  # Add logging
-        print(f"Error type: {type(e)}")  # Add logging
+        print(f"Error in admin_dashboard: {str(e)}")
         import traceback
-        traceback.print_exc()  # Print full traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to load admin dashboard: {str(e)}")
-
 
 @router.get("/users")
 async def admin_get_users(
