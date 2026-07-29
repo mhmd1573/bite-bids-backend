@@ -219,91 +219,6 @@ async def get_chat_room(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# @router.post("/rooms/{room_id}/messages")
-# async def send_chat_message(
-#     room_id: str,
-#     message_data: ChatMessageCreate,
-#     background_tasks: BackgroundTasks,
-#     db: AsyncSession = Depends(get_db),
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     """Send a chat message with optional moderation"""
-#     try:
-#         user_id = uuid.UUID(current_user['id'])
-#         message_text = message_data.message.strip() if message_data.message else ""
-
-#         if not message_text and not message_data.file_url:
-#             raise HTTPException(status_code=400, detail="Message cannot be empty")
-
-#         # Verify room exists and user is a participant
-#         room_query = select(ChatRoom).where(ChatRoom.id == uuid.UUID(room_id))
-#         result = await db.execute(room_query)
-#         room = result.scalar_one_or_none()
-        
-#         if not room:
-#             raise HTTPException(status_code=404, detail="Chat room not found")
-        
-#         if user_id not in [room.developer_id, room.investor_id]:
-#             raise HTTPException(status_code=403, detail="Not a participant in this chat")
-        
-#         # Create message with pending moderation status
-#         new_message = ChatMessage(
-#             room_id=uuid.UUID(room_id),
-#             sender_id=user_id,
-#             message=message_text if message_text else None,
-#             file_url=message_data.file_url,
-#             file_name=message_data.file_name,
-#             file_size=message_data.file_size,
-#             file_type=message_data.file_type,
-#             message_type=message_data.message_type or "text",
-#             moderation_status='pending',
-#             flagged=False
-#         )
-#         db.add(new_message)
-
-#         recipient_id = room.investor_id if user_id == room.developer_id else room.developer_id
-
-#         # Update room's updated_at
-#         room.updated_at = datetime.utcnow()
-
-#         await db.commit()
-#         await db.refresh(new_message)
-
-#         message_dict = model_to_dict(new_message)
-
-#         # Send via WebSocket IMMEDIATELY
-#         await manager.send_chat_message(room_id, message_dict)
-
-#         # Schedule background moderation for text messages
-#         if message_text:
-#             from app.services.moderation_service import moderate_message_async
-#             background_tasks.add_task(
-#                 moderate_message_async,
-#                 str(new_message.id),
-#                 message_text,
-#                 room_id,
-#                 str(user_id),
-#                 current_user['email']
-#             )
-
-#         if recipient_id:
-#             # Update unread count
-#             total_unread = await get_total_unread_chat_count(db, recipient_id)
-#             await manager.send_ws_event(
-#                 str(recipient_id),
-#                 {
-#                     "type": "chat_unread_count",
-#                     "total_unread_count": total_unread,
-#                     "room_id": room_id
-#                 }
-#             )
-        
-#         return message_dict
-        
-#     except Exception as e:
-#         await db.rollback()
-#         raise HTTPException(status_code=500, detail=str(e))
-
 @router.post("/rooms/{room_id}/messages")
 async def send_chat_message(
     room_id: str,
@@ -774,6 +689,84 @@ async def mark_message_as_read(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# @router.get("/rooms/{room_id}/pending-payout")
+# async def get_pending_payout(
+#     room_id: str,
+#     db: AsyncSession = Depends(get_db),
+#     current_user = Depends(get_current_user)
+# ):
+#     """
+#     ✅ Get pending payout for a chat room - SOURCE OF TRUTH for project confirmation
+#     This endpoint checks if a payout record exists, which means the investor confirmed the project.
+#     """
+#     try:
+#         user_id = uuid.UUID(current_user["id"])
+        
+#         # Get the room
+#         room_query = await db.execute(
+#             select(ChatRoom).where(ChatRoom.id == uuid.UUID(room_id))
+#         )
+#         room = room_query.scalar_one_or_none()
+        
+#         if not room:
+#             raise HTTPException(status_code=404, detail="Chat room not found")
+        
+#         # Verify user is a participant
+#         if user_id not in [room.developer_id, room.investor_id]:
+#             raise HTTPException(status_code=403, detail="Access denied")
+        
+#         # Get the project
+#         project_query = await db.execute(
+#             select(Project).where(Project.id == room.project_id)
+#         )
+#         project = project_query.scalar_one_or_none()
+        
+#         if not project:
+#             raise HTTPException(status_code=404, detail="Project not found")
+        
+#         # ✅ Check for existing payout record (this is the source of truth)
+#         from app.models.payment import DeveloperPayout  # Make sure this import exists
+        
+#         payout_query = await db.execute(
+#             select(DeveloperPayout).where(
+#                 and_(
+#                     DeveloperPayout.project_id == project.id,
+#                     DeveloperPayout.developer_id == project.developer_id
+#                 )
+#             ).order_by(DeveloperPayout.created_at.desc())
+#         )
+#         payout = payout_query.scalar_one_or_none()
+        
+#         if payout:
+#             # ✅ Payout exists = project has been confirmed
+#             return {
+#                 "has_pending_payout": True,
+#                 "payout": {
+#                     "id": str(payout.id),
+#                     "gross_amount": float(payout.gross_amount),
+#                     "platform_fee": float(payout.platform_fee),
+#                     "net_amount": float(payout.net_amount),
+#                     "status": payout.status,  # 'pending', 'processing', 'completed', 'failed'
+#                     "payout_method": payout.payout_method,
+#                     "created_at": payout.created_at.isoformat() if payout.created_at else None,
+#                     "failure_reason": payout.failure_reason
+#                 },
+#                 "project_status": project.status
+#             }
+#         else:
+#             # ✅ No payout = project not confirmed yet
+#             return {
+#                 "has_pending_payout": False,
+#                 "payout": None,
+#                 "project_status": project.status
+#             }
+            
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Error fetching pending payout: {e}")
+#         raise HTTPException(status_code=500, detail=f"Failed to get payout status: {str(e)}")
+
 @router.get("/rooms/{room_id}/pending-payout")
 async def get_pending_payout(
     room_id: str,
@@ -782,7 +775,7 @@ async def get_pending_payout(
 ):
     """
     ✅ Get pending payout for a chat room - SOURCE OF TRUTH for project confirmation
-    This endpoint checks if a payout record exists, which means the investor confirmed the project.
+    Only returns payouts for the current investor
     """
     try:
         user_id = uuid.UUID(current_user["id"])
@@ -809,21 +802,20 @@ async def get_pending_payout(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # ✅ Check for existing payout record (this is the source of truth)
-        from app.models.payment import DeveloperPayout  # Make sure this import exists
-        
+        # ✅ IMPORTANT: Only check for payouts where the investor_id matches the current user
+        # This ensures each investor has their own confirmation state
         payout_query = await db.execute(
             select(DeveloperPayout).where(
                 and_(
                     DeveloperPayout.project_id == project.id,
-                    DeveloperPayout.developer_id == project.developer_id
+                    DeveloperPayout.developer_id == project.developer_id,
+                    DeveloperPayout.investor_id == user_id  # ✅ Only this investor's payouts
                 )
             ).order_by(DeveloperPayout.created_at.desc())
         )
         payout = payout_query.scalar_one_or_none()
         
         if payout:
-            # ✅ Payout exists = project has been confirmed
             return {
                 "has_pending_payout": True,
                 "payout": {
@@ -831,15 +823,15 @@ async def get_pending_payout(
                     "gross_amount": float(payout.gross_amount),
                     "platform_fee": float(payout.platform_fee),
                     "net_amount": float(payout.net_amount),
-                    "status": payout.status,  # 'pending', 'processing', 'completed', 'failed'
+                    "status": payout.status,
                     "payout_method": payout.payout_method,
                     "created_at": payout.created_at.isoformat() if payout.created_at else None,
-                    "failure_reason": payout.failure_reason
+                    "failure_reason": payout.failure_reason,
+                    "investor_id": str(payout.investor_id)  # ✅ Include investor_id
                 },
                 "project_status": project.status
             }
         else:
-            # ✅ No payout = project not confirmed yet
             return {
                 "has_pending_payout": False,
                 "payout": None,
