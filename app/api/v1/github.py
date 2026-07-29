@@ -683,11 +683,6 @@ def fetch_github_file_content(owner: str, repo: str, file_path: str, branch: str
 
         response = requests.get(url, headers=headers, timeout=15)
 
-        # Try master branch if main doesn't exist
-        if response.status_code == 404:
-            url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}?ref=master"
-            response = requests.get(url, headers=headers, timeout=15)
-
         if response.status_code == 401:
             return "Error: Invalid or expired access token."
 
