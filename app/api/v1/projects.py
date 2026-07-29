@@ -406,7 +406,7 @@ async def get_developer_projects(
 
 
 
-@router.post("/projects/{project_id}/simple-approve")
+@router.post("/{project_id}/simple-approve")
 async def simple_approve_project(
     project_id: str,
     current_user = Depends(get_current_user),
