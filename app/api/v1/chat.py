@@ -246,6 +246,69 @@ async def send_chat_message(
         if user_id not in [room.developer_id, room.investor_id]:
             raise HTTPException(status_code=403, detail="Not a participant in this chat")
         
+        # ✅ Check if project is approved or dispute resolved - chat is read-only
+        # Cases that make chat read-only:
+        # 1. Project status is 'completed' (auction project approved)
+        # 2. Project status is 'cancelled' (dispute resolved with refund_investor on auction)
+        # 3. Payout record exists (investor approved or admin resolved with refund_developer)
+        # 4. Resolved dispute with non-continue resolution (fixed_price refund_investor)
+        project_query = await db.execute(
+            select(Project).where(Project.id == room.project_id)
+        )
+        project = project_query.scalar_one_or_none()
+        
+        if project:
+            # Check if project status is 'completed' (auction project approved)
+            if project.status == 'completed':
+                raise HTTPException(
+                    status_code=400,
+                    detail="This project has been completed. The chat is now in read-only mode."
+                )
+            
+            # Check if project status is 'cancelled' (dispute resolved with refund_investor)
+            if project.status == 'cancelled':
+                raise HTTPException(
+                    status_code=400,
+                    detail="This project has been cancelled. The chat is now in read-only mode."
+                )
+            
+            # Check if a payout record exists (fixed_price projects stay 'fixed_price' after approval)
+            payout_check = await db.execute(
+                select(DeveloperPayout).where(
+                    and_(
+                        DeveloperPayout.project_id == project.id,
+                        DeveloperPayout.investor_id == user_id
+                    )
+                ).limit(1)
+            )
+            existing_payout = payout_check.scalar_one_or_none()
+            
+            if existing_payout:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This project has been completed. The chat is now in read-only mode."
+                )
+            
+            # Check if there's a resolved dispute with a final resolution (not 'continue_project')
+            from app.models.dispute import ProjectDisputeSimple
+            resolved_dispute_check = await db.execute(
+                select(ProjectDisputeSimple).where(
+                    and_(
+                        ProjectDisputeSimple.project_id == project.id,
+                        ProjectDisputeSimple.investor_id == user_id,
+                        ProjectDisputeSimple.resolved == True,
+                        ProjectDisputeSimple.resolution != 'continue_project'
+                    )
+                ).limit(1)
+            )
+            resolved_dispute = resolved_dispute_check.scalar_one_or_none()
+            
+            if resolved_dispute:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This project has been resolved. The chat is now in read-only mode."
+                )
+        
         # Create message with pending moderation status
         new_message = ChatMessage(
             room_id=uuid.UUID(room_id),
