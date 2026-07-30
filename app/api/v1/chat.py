@@ -272,13 +272,13 @@ async def send_chat_message(
                     detail="This project has been cancelled. The chat is now in read-only mode."
                 )
             
-            # Check if a payout record exists (fixed_price projects stay 'fixed_price' after approval)
+            # Check if a payout record exists for this project (any investor)
+            # This covers both:
+            # - Investor's own payout (investor_id == user_id)
+            # - Developer seeing any payout on the project (developer_id == user_id)
             payout_check = await db.execute(
                 select(DeveloperPayout).where(
-                    and_(
-                        DeveloperPayout.project_id == project.id,
-                        DeveloperPayout.investor_id == user_id
-                    )
+                    DeveloperPayout.project_id == project.id
                 ).limit(1)
             )
             existing_payout = payout_check.scalar_one_or_none()
@@ -865,7 +865,15 @@ async def get_pending_payout(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # ✅ IMPORTANT: Only check for payouts where the investor_id matches the current user
+        # ✅ Check if ANY payout exists for this project (for developer visibility)
+        any_payout_query = await db.execute(
+            select(DeveloperPayout).where(
+                DeveloperPayout.project_id == project.id
+            ).limit(1)
+        )
+        any_payout = any_payout_query.scalar_one_or_none()
+        
+        # ✅ Only check for payouts where the investor_id matches the current user
         # This ensures each investor has their own confirmation state
         payout_query = await db.execute(
             select(DeveloperPayout).where(
@@ -881,6 +889,7 @@ async def get_pending_payout(
         if payout:
             return {
                 "has_pending_payout": True,
+                "has_any_payout": any_payout is not None,
                 "payout": {
                     "id": str(payout.id),
                     "gross_amount": float(payout.gross_amount),
@@ -897,6 +906,7 @@ async def get_pending_payout(
         else:
             return {
                 "has_pending_payout": False,
+                "has_any_payout": any_payout is not None,
                 "payout": None,
                 "project_status": project.status
             }
