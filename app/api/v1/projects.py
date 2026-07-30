@@ -435,9 +435,14 @@ async def simple_approve_project(
         
         # Calculate payout
         project_amount = float(project.budget)
-        platform_fee_percentage = 6.0  # 6%
-        platform_fee = project_amount * (platform_fee_percentage / 100)
+
+        FIXED_FEE = 30.00  # $30 fixed fee
+        PLATFORM_FEE_PERCENTAGE = 6.0  # 6%
+        
+        percentage_fee = project_amount * (PLATFORM_FEE_PERCENTAGE / 100)
+        platform_fee = percentage_fee + FIXED_FEE
         developer_payout = project_amount - platform_fee
+
         
         logger.info(f"Approving project {project_id}: amount=${project_amount}, fee=${platform_fee}, payout=${developer_payout}")
         
