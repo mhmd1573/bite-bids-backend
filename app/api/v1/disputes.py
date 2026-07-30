@@ -195,7 +195,7 @@ async def create_project_dispute(
             user_id=other_party_id,
             type='dispute_opened',
             title='⚠️ Dispute Opened',
-            message=f'The {dispute_opener} has opened a dispute for project "{project.title}". Reason: {reason}.',
+            message=f'{dispute_opener.title()} opened dispute on "{project.title[:50]}". Reason: {reason[:100]}',
             link=f"/projects/{project_id}",
             details={
                 'project_id': str(project.id),
@@ -479,7 +479,7 @@ async def resolve_simple_dispute(
                 user_id=user.id,
                 type='dispute_resolved',
                 title='✅ Dispute Resolved',
-                message=f'The dispute for project "{project.title}" has been resolved. {resolution_message}',
+                message=f'Dispute on "{project.title[:50]}" resolved. {resolution_message[:150]}',
                 link=f"/projects/{project_id}",
                 details={
                     'project_id': str(project.id),

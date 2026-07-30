@@ -62,8 +62,8 @@ async def create_bid(
         str(project.developer_id),
         {
             "type": "bid_received",
-            "title": "New Bid Received",
-            "message": f"New bid of {formatted_amount} placed on your project '{project.title}'.",
+            "title": f"💰 New Bid: {formatted_amount}",
+            "message": f"Investor bid {formatted_amount} on '{project.title[:50]}'",
             "link": f"/project/{project_id}/bids",
             "details": {
                 "bid_id": str(new_bid.id),
@@ -112,8 +112,8 @@ async def accept_bid(
         str(bid.investor_id),
         {
             "type": "bid_accepted",
-            "title": "Your bid was accepted!",
-            "message": f"Your bid of {formatted_amount} on '{project.title}' has been accepted.",
+            "title": f"🎉 Bid Accepted!",
+            "message": f"Your {formatted_amount} bid on '{project.title[:50]}' was accepted by developer.",
             "link": f"/project/{project.id}",
             "details": {
                 "project_id": str(project.id),
@@ -152,8 +152,8 @@ async def reject_bid(
         str(bid.investor_id),
         {
             "type": "bid_rejected",
-            "title": "Bid Rejected",
-            "message": f"Your bid on '{project.title}' was rejected.",
+            "title": "❌ Bid Not Selected",
+            "message": f"Your bid on '{project.title[:50]}' wasn't selected this time.",
             "details": {
                 "project_id": str(project.id),
                 "bid_id": bid_id

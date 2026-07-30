@@ -365,8 +365,8 @@ async def stripe_webhook(
                             user_id,
                             {
                                 "type": "payment_verified",
-                                "title": "Posting Credit Added! ✓",
-                                "message": f"Payment successful! You now have {user.posting_credits} posting credit(s). Ready to post your project!",
+                                "title": "✅ Credit Added!",
+                                "message": f"Payment confirmed! You have {user.posting_credits} credit(s) available.",
                                 "link": "/dashboard",
                                 "details": {
                                     "payment_type": "project_posting",
@@ -446,13 +446,8 @@ async def stripe_webhook(
                 dev_notif = Notification(
                     user_id=project.developer_id,
                     type="payment_received",
-                    title="💰 Investor payment received",
-                    message=(
-                        f"The investor {investor_user.name if investor_user else 'a client'} "
-                        f"has completed a payment of {formatted_amount} for your project "
-                        f"'{project.title}'. You can now start working on the project. "
-                        f"Funds are held in BiteBids escrow."
-                    ),
+                    title=f"💰 Payment Received: {formatted_amount}",
+                    message=f"{investor_user.name if investor_user else 'Investor'} paid {formatted_amount} for '{project.title[:50]}'. Funds secured in escrow.",
                     link=str(project.id),
                     details={
                         "project_id": str(project.id),
@@ -517,8 +512,8 @@ async def stripe_webhook(
                         str(project.developer_id),
                         {
                             "type": "chat_room_created",
-                            "title": "Chat Room Created! 💬",
-                            "message": f"Payment received! Chat room for '{project.title}' is now active. Start collaborating with your investor!",
+                            "title": "💬 Chat with Investor Ready",
+                            "message": f"Payment received! Discuss '{project.title[:50]}' with {investor_user.name if investor_user else 'investor'}.",
                             "link": f"/chat/{chat_room.id}",
                             "details": {
                                 "project_id": str(project.id),
@@ -534,8 +529,8 @@ async def stripe_webhook(
                         investor_id_str,
                         {
                             "type": "chat_room_created",
-                            "title": "Chat Room Created! 💬",
-                            "message": f"Payment successful! Chat room for '{project.title}' is now active. Start discussing with the developer!",
+                            "title": "💬 Chat with Developer Ready",
+                            "message": f"Payment confirmed! Discuss '{project.title[:50]}' with {developer_user.name if developer_user else 'developer'}.",
                             "link": f"/chat/{chat_room.id}",
                             "details": {
                                 "project_id": str(project.id),
