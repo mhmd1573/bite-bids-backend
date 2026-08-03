@@ -10,6 +10,8 @@ from app.models.user import User
 from app.schemas.user import UserUpdate, UserResponse
 from app.core.dependencies import get_current_user, get_current_admin, get_user_or_self
 from app.utils.converters import model_to_dict
+from app.core.security import hash_password, verify_password, create_jwt_token, generate_verification_token
+
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
