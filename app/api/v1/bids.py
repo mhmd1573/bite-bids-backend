@@ -168,6 +168,130 @@ async def reject_bid(
         "status": "rejected"
     }
 
+@router.post("/projects/{project_id}/close-bidding")
+async def close_bidding(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Close bidding on a project and select the winner.
+    Only the project owner (developer) can close bidding.
+    The highest accepted bid wins.
+    """
+    # Get project
+    project = await db.scalar(select(Project).where(Project.id == uuid.UUID(project_id)))
+    if not project:
+        raise NotFoundException("Project not found")
+    
+    # Only project owner can close bidding
+    if str(project.developer_id) != str(current_user["id"]):
+        raise ForbiddenException("Only the project owner can close bidding")
+    
+    # Check if project is open for bidding
+    if project.status not in ["open", "bidding"]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot close bidding. Project status is '{project.status}'"
+        )
+    
+    # Get accepted bids ordered highest first
+    accepted_bids = await db.scalars(
+        select(Bid).where(
+            Bid.project_id == project.id,
+            Bid.status == "accepted"
+        ).order_by(Bid.amount.desc())
+    )
+    bids = list(accepted_bids)
+    
+    if not bids:
+        raise HTTPException(
+            status_code=400, 
+            detail="No accepted bids to finalize"
+        )
+    
+    # The highest accepted bid wins
+    winner = bids[0]
+    
+    # Update project
+    project.status = "winner_selected"
+    project.assigned_to = winner.investor_id
+    project.highest_bid = float(winner.amount)
+    project.updated_at = datetime.utcnow()
+    
+    # Reject all other bids
+    await db.execute(
+        update(Bid)
+        .where(
+            Bid.project_id == project.id,
+            Bid.id != winner.id,
+            Bid.status == "accepted"
+        )
+        .values(status="rejected")
+    )
+    await db.commit()
+    
+    # Fetch winner's user profile for notification
+    winner_user = await db.scalar(
+        select(User).where(User.id == winner.investor_id)
+    )
+    
+    # Send notification to winner
+    formatted_amount = f"${float(winner.amount):,.2f}"
+    
+    await NotificationService.send_notification_to_user(
+        str(winner.investor_id),
+        {
+            "type": "payment_required",
+            "title": "🎉 Congratulations! You Won the Project!",
+            "message": (
+                f"Your bid of {formatted_amount} on '{project.title}' has been selected! "
+                f"Please complete the payment to start the project."
+            ),
+            "link": f"/project/{project_id}/payment",
+            "details": {
+                "bid_id": str(winner.id),
+                "project_id": str(project.id),
+                "project_title": project.title,
+                "amount": float(winner.amount),
+                "bid_amount": float(winner.amount),
+                "investor_id": str(winner.investor_id),
+                "developer_id": str(project.developer_id),
+                "payment_type": "project_winner",
+                "action_required": "payment"
+            }
+        },
+        db
+    )
+    
+    # Send notification to all rejected bidders
+    rejected_bids = [b for b in bids if b.id != winner.id]
+    for bid in rejected_bids:
+        await NotificationService.send_notification_to_user(
+            str(bid.investor_id),
+            {
+                "type": "bid_rejected",
+                "title": "📢 Project Bidding Closed",
+                "message": f"Bidding on '{project.title}' has closed. Unfortunately, your bid wasn't selected this time.",
+                "link": f"/project/{project_id}",
+                "details": {
+                    "project_id": str(project.id),
+                    "bid_id": str(bid.id)
+                }
+            },
+            db
+        )
+    
+    return {
+        "message": "Bidding closed successfully",
+        "winner": str(winner.investor_id),
+        "winner_name": winner_user.name if winner_user else None,
+        "winner_amount": float(winner.amount),
+        "total_bids": len(bids),
+        "rejected_count": len(rejected_bids),
+        "notification_sent": True
+    }
+
 
 @router.get("/projects/{project_id}/bids")
 async def get_project_bids(
