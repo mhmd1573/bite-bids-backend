@@ -159,7 +159,7 @@ class Project(Base):
     images = Column(ARRAY(String), default=[])
     
     __table_args__ = (
-        CheckConstraint("status IN ('open', 'in_progress', 'completed', 'closed', 'cancelled', 'fixed_price', 'disputed')"),
+        CheckConstraint("status IN ('open', 'in_progress', 'winner_selected' ,'completed', 'closed', 'cancelled', 'fixed_price', 'disputed')"),
         CheckConstraint("priority IN ('low', 'medium', 'high')"),
         CheckConstraint("progress >= 0 AND progress <= 100"),
         Index('idx_projects_featured', 'featured', postgresql_where=(featured == True)),

@@ -56,6 +56,9 @@ class Settings:
     R2_ACCESS_KEY_ID: str = os.getenv("R2_ACCESS_KEY_ID")
     R2_SECRET_ACCESS_KEY: str = os.getenv("R2_SECRET_ACCESS_KEY")
     R2_BUCKET_NAME: str = os.getenv("R2_BUCKET_NAME", "bitebids-projects")
+    # Public URL for R2 bucket (e.g. https://pub-xxxx.r2.dev or custom domain)
+    # If set, images will use permanent public URLs instead of expiring presigned URLs
+    R2_PUBLIC_URL: str = os.getenv("R2_PUBLIC_URL", "")
     
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
@@ -82,10 +85,6 @@ class Settings:
     # File Upload
     MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "5242880"))  # 5MB default
     ALLOWED_IMAGE_EXTENSIONS: List[str] = ['.png', '.jpg', '.jpeg']
-    
-    # ImgBB
-    IMGBB_API_KEY: str = os.getenv("IMGBB_API_KEY")
-    IMGBB_UPLOAD_URL: str = "https://api.imgbb.com/1/upload"
     
     # Upload directories
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads/chat_files")

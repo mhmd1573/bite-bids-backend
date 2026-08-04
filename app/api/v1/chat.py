@@ -448,8 +448,8 @@ async def upload_chat_file(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Upload a chat file/image to ImgBB (same pattern as project images)
-    ✅ UPDATED: Uses ImgBB for cloud storage instead of local disk
+    Upload a chat file/image to Cloudflare R2
+    ✅ UPDATED: Uses Cloudflare R2 for cloud storage instead of ImgBB
     """
     temp_path = None
 
@@ -500,35 +500,41 @@ async def upload_chat_file(
                 detail="This image contains contact information (phone, email, social media, or URLs)."
             )
 
-        # Upload to ImgBB (same as project images)
-        if not settings.IMGBB_API_KEY:
+        # Upload to Cloudflare R2
+        if not r2_client:
             raise HTTPException(
-                status_code=500,
-                detail="ImgBB API key not configured. Please contact administrator."
+                status_code=503,
+                detail="Cloud storage not configured. Please contact administrator."
             )
 
-        import base64
-        import requests
+        # Generate unique file key for R2
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        clean_filename = os.path.splitext(os.path.basename(filename).replace("..", ""))[0]
+        file_key = f"chat-files/{room_id}/{timestamp}_{clean_filename}{file_ext}"
 
+        # Upload the image to R2
         with open(temp_path, 'rb') as img_file:
-            image_data = base64.b64encode(img_file.read()).decode('utf-8')
+            r2_client.put_object(
+                Bucket=settings.R2_BUCKET_NAME,
+                Key=file_key,
+                Body=img_file,
+                ContentType=f'image/{file_ext.lstrip(".")}'
+            )
 
-        upload_data = {
-            'key': settings.IMGBB_API_KEY,
-            'image': image_data,
-            'name': f"chat_{room_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
-        }
-
-        response = requests.post(settings.IMGBB_UPLOAD_URL, data=upload_data, timeout=30)
-        response.raise_for_status()
-
-        result = response.json()
-
-        if not result.get('success'):
-            raise Exception(f"ImgBB upload failed: {result.get('error', {}).get('message', 'Unknown error')}")
-
-        image_url = result['data']['url']
-        delete_url = result['data'].get('delete_url', '')
+        # Generate image URL - use permanent public URL if configured, otherwise presigned URL
+        if settings.R2_PUBLIC_URL:
+            # Permanent public URL (requires R2 bucket to be public)
+            image_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{file_key}"
+        else:
+            # Fallback: presigned URL (expires after 7 days)
+            image_url = r2_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': settings.R2_BUCKET_NAME,
+                    'Key': file_key,
+                },
+                ExpiresIn=604800  # 7 days
+            )
 
         # Clean up temp file
         if temp_path and os.path.exists(temp_path):
@@ -562,7 +568,7 @@ async def upload_chat_file(
             "file_url": image_url,
             "file_name": filename,
             "file_size": len(content),
-            "delete_url": delete_url,
+            "delete_url": "",
             "message": message_dict
         }
 
@@ -615,7 +621,7 @@ async def download_chat_file(
         if not message.file_url:
             raise HTTPException(status_code=404, detail="No file attached to this message")
 
-        # If it's a cloud URL (ImgBB), redirect to it
+        # If it's a cloud URL (R2), redirect to it
         if message.file_url.startswith('http://') or message.file_url.startswith('https://'):
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url=message.file_url)
