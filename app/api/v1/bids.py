@@ -168,7 +168,7 @@ async def reject_bid(
         "status": "rejected"
     }
 
-@router.post("/projects/{project_id}/close-bidding")
+@router.put("/projects/{project_id}/close-bidding")
 async def close_bidding(
     project_id: str,
     current_user = Depends(get_current_user),
