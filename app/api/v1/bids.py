@@ -58,7 +58,7 @@ async def create_bid(
     # Send notification to project owner
     formatted_amount = f"${bid_data.amount:,.2f}"
     
-    await send_notification_to_user(
+    await NotificationService.send_notification_to_user(
         str(project.developer_id),
         {
             "type": "bid_received",
@@ -108,7 +108,7 @@ async def accept_bid(
     # Send notification to investor
     formatted_amount = f"${float(bid.amount):,.2f}"
     
-    await send_notification_to_user(
+    await NotificationService.send_notification_to_user(
         str(bid.investor_id),
         {
             "type": "bid_accepted",
@@ -148,7 +148,7 @@ async def reject_bid(
     await db.commit()
     
     # Send notification to investor
-    await send_notification_to_user(
+    await NotificationService.send_notification_to_user(
         str(bid.investor_id),
         {
             "type": "bid_rejected",
