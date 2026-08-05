@@ -520,13 +520,14 @@ async def simple_approve_project(
         developer = developer_query.scalar_one()
         
         # Update developer stats (only if not already updated for this project)
-        # Check if any payout exists for this project to avoid double counting
+        # ✅ FIXED: Use scalars() instead of scalar_one_or_none() to handle multiple investors
         any_payout_query = await db.execute(
             select(DeveloperPayout).where(
                 DeveloperPayout.project_id == project.id
             )
         )
-        any_payout = any_payout_query.scalar_one_or_none()
+        any_payouts = any_payout_query.scalars().all()
+        any_payout = any_payouts[0] if any_payouts else None  # Just need to check if any exists
         
         if not any_payout:
             # First confirmation for this project - update developer stats
