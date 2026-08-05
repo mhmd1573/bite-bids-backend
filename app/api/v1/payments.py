@@ -192,13 +192,16 @@ async def create_stripe_checkout_session(
         if request.order_type == 'auction':
             item_name = "Auction Winning Bid Payment"
 
+        # Parse UUIDs early (needed for duplicate-purchase check below)
+        customer_id_uuid = uuid.UUID(current_user.get('id'))
+        project_id_uuid = uuid.UUID(request.project_id) if request.project_id else None
+
         # ✅ Prevent duplicate purchases for fixed-price projects
         if request.order_type == 'fixed' and request.project_id:
-            project_uuid = uuid.UUID(request.project_id)
             existing_purchase = await db.scalar(
                 select(CheckoutSession).where(
                     and_(
-                        CheckoutSession.project_id == project_uuid,
+                        CheckoutSession.project_id == project_id_uuid,
                         CheckoutSession.customer_id == customer_id_uuid,
                         CheckoutSession.status == 'completed'
                     )
@@ -241,9 +244,6 @@ async def create_stripe_checkout_session(
         )
         
         # Create database record
-        customer_id_uuid = uuid.UUID(current_user.get('id'))
-        project_id_uuid = uuid.UUID(request.project_id) if request.project_id else None
-        
         checkout_record = CheckoutSession(
             id=uuid.uuid4(),
             session_id=checkout_session.id,
