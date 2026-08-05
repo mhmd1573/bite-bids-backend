@@ -39,6 +39,7 @@ class Project(Base):
     bids_count = Column(Integer, default=0)
     highest_bid = Column(DECIMAL(12,2))
     lowest_bid = Column(DECIMAL(12,2))
+    buyers_count = Column(Integer, default=0)  # Number of investors who confirmed/bought fixed-price project
     
     # Location
     location = Column(String(255))

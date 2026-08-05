@@ -192,6 +192,24 @@ async def create_stripe_checkout_session(
         if request.order_type == 'auction':
             item_name = "Auction Winning Bid Payment"
 
+        # ✅ Prevent duplicate purchases for fixed-price projects
+        if request.order_type == 'fixed' and request.project_id:
+            project_uuid = uuid.UUID(request.project_id)
+            existing_purchase = await db.scalar(
+                select(CheckoutSession).where(
+                    and_(
+                        CheckoutSession.project_id == project_uuid,
+                        CheckoutSession.customer_id == customer_id_uuid,
+                        CheckoutSession.status == 'completed'
+                    )
+                )
+            )
+            if existing_purchase:
+                raise HTTPException(
+                    status_code=400,
+                    detail="You have already purchased this project."
+                )
+
         expiry = datetime.utcnow() + timedelta(minutes=30)
         expiry_ts = int(expiry.replace(tzinfo=timezone.utc).timestamp())
 

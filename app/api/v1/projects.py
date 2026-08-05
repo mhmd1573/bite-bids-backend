@@ -498,6 +498,7 @@ async def simple_approve_project(
         if existing_payout:
             # This investor already confirmed - return existing payout info
             logger.info(f"Investor {user_uuid} already confirmed project {project_id}")
+            await db.refresh(project)
             return {
                 "success": True,
                 "message": "You already confirmed this project.",
@@ -507,7 +508,8 @@ async def simple_approve_project(
                 "platform_commission": float(existing_payout.platform_fee),
                 "gross_amount": float(existing_payout.gross_amount),
                 "already_confirmed": True,
-                "payout_status": existing_payout.status
+                "payout_status": existing_payout.status,
+                "project": model_to_dict(project)
             }
         
         # Get developer user
@@ -532,6 +534,11 @@ async def simple_approve_project(
             logger.info(f"Updated developer stats for {developer.name}")
         else:
             logger.info(f"Developer stats already updated for project {project_id}")
+
+        # ✅ Increment buyers count for fixed-price projects (only on first confirmation per investor)
+        if project.status == 'fixed_price' and not existing_payout:
+            project.buyers_count = (project.buyers_count or 0) + 1
+            logger.info(f"Incremented buyers_count for project {project_id} to {project.buyers_count}")
 
         # Find the checkout session for THIS investor
         checkout_result = await db.execute(
@@ -638,7 +645,8 @@ async def simple_approve_project(
                 "gross_amount": float(project_amount),
                 "action_required": "bank_setup",
                 "notification_sent": True,
-                "investor_id": str(user_uuid)
+                "investor_id": str(user_uuid),
+                "project": model_to_dict(project)
             }
 
         # ✅ CREATE PAYOUT RECORD (pending - admin will process bank transfer)
@@ -805,7 +813,8 @@ async def simple_approve_project(
             "payout_method": "bank_transfer",
             "notification_sent": True,
             "email_sent": True,
-            "investor_id": str(user_uuid)
+            "investor_id": str(user_uuid),
+            "project": model_to_dict(project)
         }
         
     except HTTPException:

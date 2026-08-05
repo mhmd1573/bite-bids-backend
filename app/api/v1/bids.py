@@ -136,7 +136,10 @@ async def accept_bid(
         db
     )
     
-    return {"message": "Bid accepted"}
+    return {
+        "message": "Bid accepted",
+        "project": model_to_dict(project)
+    }
 
 
 @router.put("/{bid_id}/reject")
@@ -185,7 +188,8 @@ async def reject_bid(
     return {
         "message": "Bid rejected successfully",
         "bid_id": str(bid.id),
-        "status": "rejected"
+        "status": "rejected",
+        "project": model_to_dict(project)
     }
 
 @router.put("/projects/{project_id}/close-bidding")
@@ -317,7 +321,8 @@ async def close_bidding(
         "winner_amount": float(winner.amount),
         "total_bids": len(bids),
         "rejected_count": len(rejected_bids),
-        "notification_sent": True
+        "notification_sent": True,
+        "project": model_to_dict(project)
     }
 
 
