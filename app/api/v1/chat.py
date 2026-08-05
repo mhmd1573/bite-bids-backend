@@ -273,19 +273,15 @@ async def send_chat_message(
                 )
             
             # Check if a payout record exists for this project
-            # ✅ FIXED: For fixed-price projects with multiple investors:
-            # - Developer: read-only if ANY investor confirms (any payout exists)
-            # - Investor: read-only only if THEY confirmed (their specific payout)
+            # ✅ FIXED: Chat becomes read-only when the INVESTOR in this room confirms
+            # - For fixed-price projects: each investor-developer pair has own chat room
+            # - When an investor confirms, BOTH parties can't chat in that room
+            # - Developer can still chat with other investors who haven't confirmed
             is_developer = user_id == room.developer_id
-            if is_developer:
-                # Developer sees read-only when any investor confirms
-                payout_check = await db.execute(
-                    select(DeveloperPayout).where(
-                        DeveloperPayout.project_id == project.id
-                    ).limit(1)
-                )
-            else:
-                # Investor sees read-only only when THEY confirm
+            
+            # Check if the investor in this room has confirmed
+            if not is_developer:
+                # Current user is investor - check if THEY confirmed
                 payout_check = await db.execute(
                     select(DeveloperPayout).where(
                         and_(
@@ -294,6 +290,17 @@ async def send_chat_message(
                         )
                     ).limit(1)
                 )
+            else:
+                # Current user is developer - check if the OTHER person (investor) confirmed
+                payout_check = await db.execute(
+                    select(DeveloperPayout).where(
+                        and_(
+                            DeveloperPayout.project_id == project.id,
+                            DeveloperPayout.investor_id == room.investor_id
+                        )
+                    ).limit(1)
+                )
+            
             existing_payout = payout_check.scalar_one_or_none()
             
             if existing_payout:
