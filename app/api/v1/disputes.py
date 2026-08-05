@@ -18,6 +18,7 @@ from app.core.dependencies import get_current_user, get_current_admin
 from app.core.exceptions import NotFoundException, ForbiddenException
 from app.utils.converters import model_to_dict
 from app.services.notification_service import NotificationService
+from app.core.websocket_manager import manager
 
 router = APIRouter(prefix="/disputes", tags=["Disputes"])
 
@@ -228,6 +229,19 @@ async def create_project_dispute(
         db.add(system_message)
         
         await db.commit()
+        
+        # 📡 Broadcast live update so viewers see the project is now disputed
+        await manager.broadcast_data_change(
+            event_type="project_updated",
+            data=model_to_dict(project),
+            project_id=str(project.id)
+        )
+        # 📡 Notify admin dashboards that new data changed
+        await manager.broadcast_data_change(
+            event_type="admin_update",
+            data={"entity": "dispute", "action": "created", "project_id": str(project.id)},
+            project_id=str(project.id)
+        )
         
         return {
             "success": True,
@@ -521,6 +535,19 @@ async def resolve_simple_dispute(
             db.add(system_message)
         
         await db.commit()
+        
+        # 📡 Broadcast live update so viewers see the project status change from dispute resolution
+        await manager.broadcast_data_change(
+            event_type="project_updated",
+            data=model_to_dict(project),
+            project_id=str(project.id)
+        )
+        # 📡 Notify admin dashboards that a dispute was resolved
+        await manager.broadcast_data_change(
+            event_type="admin_update",
+            data={"entity": "dispute", "action": "resolved", "project_id": str(project.id)},
+            project_id=str(project.id)
+        )
         
         return {
             "success": True,

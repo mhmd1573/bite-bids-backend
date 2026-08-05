@@ -23,6 +23,7 @@ from app.core.exceptions import NotFoundException, ForbiddenException
 from app.utils.converters import model_to_dict
 from app.services.notification_service import NotificationService
 from app.services.email_service import EmailService
+from app.core.websocket_manager import manager
 from app.config import settings
 from pydantic import BaseModel
 from typing import Optional
@@ -345,6 +346,12 @@ async def admin_create_user(
     await db.commit()
     await db.refresh(new_user)
     
+    # 📡 Notify admin dashboards that a user was created
+    await manager.broadcast_data_change(
+        event_type="admin_update",
+        data={"entity": "user", "action": "created", "user_id": str(new_user.id)},
+    )
+    
     return {
         "message": "User created successfully",
         "user": model_to_dict(new_user)
@@ -384,6 +391,12 @@ async def admin_ban_user(
     
     await db.commit()
     
+    # 📡 Notify admin dashboards that a user was banned
+    await manager.broadcast_data_change(
+        event_type="admin_update",
+        data={"entity": "user", "action": "banned", "user_id": str(user.id)},
+    )
+    
     return {"message": f"User {user.email} banned successfully"}
 
 
@@ -411,6 +424,12 @@ async def admin_unban_user(
     user.status = "active"
     user.updated_at = datetime.utcnow()
     await db.commit()
+    
+    # 📡 Notify admin dashboards that a user was unbanned
+    await manager.broadcast_data_change(
+        event_type="admin_update",
+        data={"entity": "user", "action": "unbanned", "user_id": user_id},
+    )
     
     return {"message": "User has been unbanned successfully", "user_id": user_id}
 
@@ -495,6 +514,12 @@ async def admin_add_posting_credits(
         user.posting_credits = (user.posting_credits or 0) + credits
         await db.commit()
         await db.refresh(user)
+        
+        # 📡 Notify admin dashboards that credits were added
+        await manager.broadcast_data_change(
+            event_type="admin_update",
+            data={"entity": "credits", "action": "added", "user_id": user_id, "credits": credits},
+        )
         
         # Send notification
         await send_notification_to_user(
@@ -781,6 +806,12 @@ async def admin_mark_payout_paid(
     db.add(dev_notification)
     await db.commit()
     
+    # 📡 Notify admin dashboards that a payout was marked paid
+    await manager.broadcast_data_change(
+        event_type="admin_update",
+        data={"entity": "payout", "action": "paid", "payout_id": str(payout.id), "project_id": str(payout.project_id)},
+    )
+    
     return {
         "success": True,
         "message": "Payout marked as paid successfully",
@@ -828,6 +859,12 @@ async def admin_mark_payout_failed(
     payout.processed_by = uuid.UUID(admin['id'])
     
     await db.commit()
+    
+    # 📡 Notify admin dashboards that a payout was marked failed
+    await manager.broadcast_data_change(
+        event_type="admin_update",
+        data={"entity": "payout", "action": "failed", "payout_id": str(payout.id), "project_id": str(payout.project_id)},
+    )
     
     return {
         "success": True,

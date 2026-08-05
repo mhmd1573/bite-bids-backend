@@ -25,6 +25,7 @@ from app.utils.converters import model_to_dict
 
 from app.services.notification_service import NotificationService
 from app.services.email_service import EmailService
+from app.core.websocket_manager import manager
 
 from app.config import settings
 
@@ -424,6 +425,19 @@ async def stripe_webhook(
             project.updated_at = datetime.utcnow()
             await db.commit()
             logger.info(f"Project {project.id} status: {project.status} after payment")
+            
+            # 📡 Broadcast live update so viewers see the project go 'in_progress' after payment
+            await manager.broadcast_data_change(
+                event_type="project_updated",
+                data=model_to_dict(project),
+                project_id=str(project.id)
+            )
+            # 📡 Notify admin dashboards of a new payment
+            await manager.broadcast_data_change(
+                event_type="admin_update",
+                data={"entity": "payment", "action": "completed", "project_id": str(project.id)},
+                project_id=str(project.id)
+            )
 
         if notification_id_str:
             try:
