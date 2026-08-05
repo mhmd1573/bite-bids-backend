@@ -26,6 +26,7 @@ from app.models.chat import ChatRoom, ChatMessage
 from app.core.constants import PLATFORM_FEE_PERCENTAGE, PLATFORM_FIXED_FEE
 
 from app.services.notification_service import NotificationService
+from app.core.websocket_manager import manager
 from app.config import settings
 
 
@@ -139,6 +140,13 @@ async def create_project(
     db.add(new_project)
     await db.commit()
     await db.refresh(new_project)
+    
+    # 📡 Broadcast live update so Marketplace shows the new project instantly
+    await manager.broadcast_data_change(
+        event_type="project_created",
+        data=model_to_dict(new_project),
+        project_id=str(new_project.id)
+    )
     
     # Send admin notification
     background_tasks.add_task(
@@ -285,6 +293,13 @@ async def update_project(
     await db.commit()
     await db.refresh(project)
     
+    # 📡 Broadcast live update so viewers see the project update instantly
+    await manager.broadcast_data_change(
+        event_type="project_updated",
+        data=model_to_dict(project),
+        project_id=str(project.id)
+    )
+    
     # Send admin notification
     background_tasks.add_task(
         send_admin_project_notification,
@@ -344,6 +359,13 @@ async def delete_project(
     
     await db.delete(project)
     await db.commit()
+    
+    # 📡 Broadcast live update so viewers see the project removed instantly
+    await manager.broadcast_data_change(
+        event_type="project_deleted",
+        data={"id": project_id, "deleted": True},
+        project_id=project_id
+    )
     
     # Send admin notification
     background_tasks.add_task(
@@ -599,6 +621,13 @@ async def simple_approve_project(
             
             await db.commit()
             
+            # 📡 Broadcast live update so viewers see the project status change instantly
+            await manager.broadcast_data_change(
+                event_type="project_updated",
+                data=model_to_dict(project),
+                project_id=str(project.id)
+            )
+            
             return {
                 "success": True,
                 "message": "Project approved! Developer needs to add bank details to receive payment.",
@@ -633,6 +662,13 @@ async def simple_approve_project(
         await db.commit()
         await db.refresh(project)
         await db.refresh(payout_record)
+
+        # 📡 Broadcast live update so viewers see the project status change instantly
+        await manager.broadcast_data_change(
+            event_type="project_updated",
+            data=model_to_dict(project),
+            project_id=str(project.id)
+        )
 
         # ✅ CREATE NOTIFICATION FOR DEVELOPER
         dev_notification = Notification(

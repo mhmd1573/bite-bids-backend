@@ -172,6 +172,42 @@ class ConnectionManager:
             for conn in disconnected:
                 self.disconnect(conn)
 
+    async def broadcast_data_change(self, event_type: str, data: dict, project_id: str = None):
+        """
+        Broadcast a data-change event to all connected users.
+        Used for live updates to project listings, bid counts, project status, etc.
+        
+        Args:
+            event_type: Type of change (e.g. 'project_updated', 'project_created', 'project_deleted')
+            data: The actual updated data payload (e.g. project dict with new bids_count/status)
+            project_id: Optional project ID to include in the event for client-side filtering
+        """
+        from datetime import datetime, timezone
+        
+        event = {
+            "type": "data_change",
+            "event_type": event_type,
+            "data": data,
+            "project_id": project_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        for user_id, connections in list(self.active_connections.items()):
+            disconnected = []
+            
+            for connection in connections:
+                try:
+                    await connection.send_json(event)
+                except Exception as e:
+                    logger.error(f"Error broadcasting data change to user {user_id}: {e}")
+                    disconnected.append(connection)
+            
+            # Clean up disconnected connections
+            for conn in disconnected:
+                self.disconnect(conn)
+        
+        logger.info(f"📡 Broadcast data change: {event_type} (project_id={project_id})")
+
 
 # Create a global instance
 manager = ConnectionManager()

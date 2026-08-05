@@ -14,6 +14,7 @@ from app.core.dependencies import get_current_user
 from app.core.exceptions import ForbiddenException, NotFoundException
 from app.utils.converters import model_to_dict
 from app.services.notification_service import NotificationService
+from app.core.websocket_manager import manager
 
 router = APIRouter(prefix="/bids", tags=["Bids"])
 
@@ -74,6 +75,20 @@ async def create_bid(
         db
     )
     
+    # 📡 Broadcast live update to all connected users (Marketplace, Dashboard, etc.)
+    # Update project stats so viewers see the new bid count/highest bid instantly
+    project.bids_count = (project.bids_count or 0) + 1
+    project.highest_bid = max(float(bid_data.amount), project.highest_bid or float(bid_data.amount))
+    await db.commit()
+    await db.refresh(project)
+    await db.refresh(new_bid)
+    
+    await manager.broadcast_data_change(
+        event_type="project_updated",
+        data=model_to_dict(project),
+        project_id=str(project.id)
+    )
+    
     return model_to_dict(new_bid)
 
 
@@ -104,6 +119,14 @@ async def accept_bid(
     project.bids_count = (project.bids_count or 0) + 1
     
     await db.commit()
+    await db.refresh(project)
+    
+    # 📡 Broadcast live update to all connected users
+    await manager.broadcast_data_change(
+        event_type="project_updated",
+        data=model_to_dict(project),
+        project_id=str(project.id)
+    )
     
     # Send notification to investor
     formatted_amount = f"${float(bid.amount):,.2f}"
@@ -146,6 +169,14 @@ async def reject_bid(
     
     bid.status = "rejected"
     await db.commit()
+    await db.refresh(project)
+    
+    # 📡 Broadcast live update to all connected users
+    await manager.broadcast_data_change(
+        event_type="project_updated",
+        data=model_to_dict(project),
+        project_id=str(project.id)
+    )
     
     # Send notification to investor
     await NotificationService.send_notification_to_user(
@@ -230,6 +261,14 @@ async def close_bidding(
         .values(status="rejected")
     )
     await db.commit()
+    await db.refresh(project)
+    
+    # 📡 Broadcast live update to all connected users
+    await manager.broadcast_data_change(
+        event_type="project_updated",
+        data=model_to_dict(project),
+        project_id=str(project.id)
+    )
     
     # Fetch winner's user profile for notification
     winner_user = await db.scalar(
