@@ -272,15 +272,28 @@ async def send_chat_message(
                     detail="This project has been cancelled. The chat is now in read-only mode."
                 )
             
-            # Check if a payout record exists for this project (any investor)
-            # This covers both:
-            # - Investor's own payout (investor_id == user_id)
-            # - Developer seeing any payout on the project (developer_id == user_id)
-            payout_check = await db.execute(
-                select(DeveloperPayout).where(
-                    DeveloperPayout.project_id == project.id
-                ).limit(1)
-            )
+            # Check if a payout record exists for this project
+            # ✅ FIXED: For fixed-price projects with multiple investors:
+            # - Developer: read-only if ANY investor confirms (any payout exists)
+            # - Investor: read-only only if THEY confirmed (their specific payout)
+            is_developer = user_id == room.developer_id
+            if is_developer:
+                # Developer sees read-only when any investor confirms
+                payout_check = await db.execute(
+                    select(DeveloperPayout).where(
+                        DeveloperPayout.project_id == project.id
+                    ).limit(1)
+                )
+            else:
+                # Investor sees read-only only when THEY confirm
+                payout_check = await db.execute(
+                    select(DeveloperPayout).where(
+                        and_(
+                            DeveloperPayout.project_id == project.id,
+                            DeveloperPayout.investor_id == user_id
+                        )
+                    ).limit(1)
+                )
             existing_payout = payout_check.scalar_one_or_none()
             
             if existing_payout:
