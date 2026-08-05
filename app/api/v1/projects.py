@@ -463,7 +463,8 @@ async def simple_approve_project(
         
         percentage_fee = project_amount * (PLATFORM_FEE_PERCENTAGE / 100)
         platform_fee = percentage_fee + FIXED_FEE
-        developer_payout = project_amount - platform_fee
+        # ✅ Developer receives the FULL gross amount (budget), not net after fees
+        developer_payout = project_amount
 
         
         logger.info(f"Approving project {project_id}: amount=${project_amount}, fee=${platform_fee}, payout=${developer_payout}")

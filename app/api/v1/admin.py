@@ -793,11 +793,11 @@ async def admin_mark_payout_paid(
     dev_notification = Notification(
         user_id=payout.developer_id,
         type='payout_completed',
-        title=f'✅ Payout Sent: ${float(payout.net_amount):.2f}',
-        message=f'Payment of ${float(payout.net_amount):.2f} sent to your bank. Ref: {request.bank_transfer_reference[:20]}',
+        title=f'✅ Payout Sent: ${float(payout.gross_amount):.2f}',
+        message=f'Payment of ${float(payout.gross_amount):.2f} sent to your bank. Ref: {request.bank_transfer_reference[:20]}',
         link='/dashboard',
         details={
-            'amount': float(payout.net_amount),
+            'amount': float(payout.gross_amount),
             'reference': request.bank_transfer_reference,
             'method': 'bank_transfer'
         },

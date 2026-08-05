@@ -457,7 +457,8 @@ async def resolve_simple_dispute(
             project_amount = float(project.budget)
             platform_fee_percentage = 6.0
             platform_fee = project_amount * (platform_fee_percentage / 100)
-            developer_payout_amount = project_amount - platform_fee
+            # ✅ Developer receives the FULL gross amount, not net after fees
+            developer_payout_amount = project_amount
             
             checkout_result = await db.execute(
                 select(CheckoutSession).where(
