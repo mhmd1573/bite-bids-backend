@@ -75,20 +75,9 @@ async def create_bid(
         db
     )
     
-    # 📡 Broadcast live update to all connected users (Marketplace, Dashboard, etc.)
-    # Update project stats so viewers see the new bid count/highest bid instantly
-    project.bids_count = (project.bids_count or 0) + 1
-    project.highest_bid = max(float(bid_data.amount), project.highest_bid or float(bid_data.amount))
-    await db.commit()
-    await db.refresh(project)
-    await db.refresh(new_bid)
-    
-    await manager.broadcast_data_change(
-        event_type="project_updated",
-        data=model_to_dict(project),
-        project_id=str(project.id)
-    )
-    
+    # NOTE: Bid is created as "pending". It does NOT count toward the project's
+    # bids_count / highest_bid until the developer accepts it.
+    # The bid_count/highest_bid update + live broadcast happens in accept_bid.
     return model_to_dict(new_bid)
 
 
