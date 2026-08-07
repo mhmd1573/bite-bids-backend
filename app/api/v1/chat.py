@@ -820,17 +820,30 @@ async def get_pending_payout(
         )
         any_payout = any_payout_query.scalar_one_or_none()
         
-        # ✅ Only check for payouts where the investor_id matches the current user
-        # This ensures each investor has their own confirmation state
-        payout_query = await db.execute(
-            select(DeveloperPayout).where(
-                and_(
-                    DeveloperPayout.project_id == project.id,
-                    DeveloperPayout.developer_id == project.developer_id,
-                    DeveloperPayout.investor_id == user_id  # ✅ Only this investor's payouts
-                )
-            ).order_by(DeveloperPayout.created_at.desc())
-        )
+        # ✅ FIXED: Check for payouts based on user role
+        # For investors: check if THIS investor confirmed
+        # For developers: check if the investor in THIS room confirmed
+        if user_id == room.developer_id:
+            # Developer: check if the investor in this room has a payout
+            payout_query = await db.execute(
+                select(DeveloperPayout).where(
+                    and_(
+                        DeveloperPayout.project_id == project.id,
+                        DeveloperPayout.investor_id == room.investor_id  # Check the investor in THIS room
+                    )
+                ).order_by(DeveloperPayout.created_at.desc())
+            )
+        else:
+            # Investor: check if THIS investor has a payout
+            payout_query = await db.execute(
+                select(DeveloperPayout).where(
+                    and_(
+                        DeveloperPayout.project_id == project.id,
+                        DeveloperPayout.developer_id == project.developer_id,
+                        DeveloperPayout.investor_id == user_id  # Check this specific investor
+                    )
+                ).order_by(DeveloperPayout.created_at.desc())
+            )
         payout = payout_query.scalar_one_or_none()
         
         if payout:
