@@ -747,7 +747,7 @@ async def simple_approve_project(
                            f"• Gross Amount: ${project_amount:.2f}\n" +
                            f"• Platform Fee (6%): ${percentage_fee:.2f}\n" +
                            f"• Fixed Processing Fee: ${FIXED_FEE:.2f}\n" +
-                           f"  └─ Total Fees: ${total_fee:.2f}\n" +
+                           f"  └─ Total Fees: ${platform_fee:.2f}\n" +
                            f"• Developer Payout: ${developer_payout:.2f}\n\n" +
                            f"💳 Payment is pending and will be processed via bank transfer.\n" +
                            f"The admin will reach developer through email to process the transfer shortly.",
