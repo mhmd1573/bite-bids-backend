@@ -7,6 +7,7 @@ import uuid
 import os
 import base64
 import requests
+import logging
 from datetime import datetime
 from PIL import Image
 import boto3
@@ -14,6 +15,8 @@ from botocore.config import Config
 import zipfile
 import io
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.models.chat import ChatRoom
@@ -24,6 +27,7 @@ from app.models.payment import DeveloperPayout
 from app.core.dependencies import get_current_user, get_current_admin
 from app.core.exceptions import NotFoundException, ForbiddenException
 from app.core.constants import ALLOWED_IMAGE_EXTENSIONS, MAX_UPLOAD_SIZE
+from app.core.websocket_manager import manager
 from app.config import settings
 
 router = APIRouter(prefix="/upload", tags=["Uploads"])
@@ -166,6 +170,20 @@ async def complete_upload(
             db.add(upload)
 
         await db.commit()
+
+        # 📡 Broadcast live update to the chat room so the investor
+        # sees the uploaded project without refreshing the page
+        try:
+            await manager.broadcast_to_room(room_id, {
+                "type": "project_uploaded",
+                "room_id": room_id,
+                "project_id": str(room.project_id) if room.project_id else None,
+                "file_name": file_name,
+                "file_size": file_size
+            })
+            logger.info(f"📡 Broadcast project_uploaded to room {room_id}")
+        except Exception as e:
+            logger.error(f"Failed to broadcast project_uploaded: {e}")
 
         return {
             "success": True,

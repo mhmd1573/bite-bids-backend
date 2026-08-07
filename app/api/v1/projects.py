@@ -754,6 +754,21 @@ async def simple_approve_project(
                 )
                 db.add(system_message)
                 logger.info(f"✅ System message added to chat room {room.id}")
+
+                # 📡 Broadcast live update to the chat room so the DEVELOPER
+                # sees the confirmation without refreshing the page
+                try:
+                    await manager.broadcast_to_room(str(room.id), {
+                        "type": "project_confirmed",
+                        "room_id": str(room.id),
+                        "project_id": str(project.id),
+                        "investor_id": str(user_uuid),
+                        "status": project.status,
+                        "developer_payout": float(developer_payout)
+                    })
+                    logger.info(f"📡 Broadcast project_confirmed to room {room.id}")
+                except Exception as broadcast_err:
+                    logger.error(f"Failed to broadcast project_confirmed: {broadcast_err}")
         except Exception as e:
             logger.error(f"Error adding system message to chat: {e}")
 
