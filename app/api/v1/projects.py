@@ -744,12 +744,9 @@ async def simple_approve_project(
                     message=f"✅ Project Completed!\n\n" +
                            f"Investor has confirmed project completion.\n" +
                            f"Payment Details:\n" +
-                           f"• Gross Amount: ${project_amount:.2f}\n" +
-                           f"• Platform Fee (6%): ${percentage_fee:.2f}\n" +
-                           f"• Fixed Processing Fee: ${FIXED_FEE:.2f}\n" +
-                           f"  └─ Total Fees: ${platform_fee:.2f}\n" +
                            f"• Developer Payout: ${developer_payout:.2f}\n\n" +
-                           f"💳 Payment is pending and will be processed via bank transfer.\n" +
+                           f"•Total Fees: ${platform_fee:.2f}\n" +
+                           f"💳 Payment will be processed via bank transfer.\n" +
                            f"The admin will reach developer through email to process the transfer shortly.",
                     message_type='system',
                     created_at=datetime.utcnow()
@@ -795,7 +792,7 @@ async def simple_approve_project(
                 {
                     "type": "project_approved",
                     "title": "🎉 Project Approved!",
-                    "message": f'Your project "{project.title}" has been approved by {current_user["name"]}! Payment of ${developer_payout:.2f} is pending bank transfer.',
+                    "message": f'Your project "{project.title}" has been approved by the investor! Payment of ${developer_payout:.2f} is pending bank transfer.',
                     "link": f"/projects/{project_id}",
                     "details": {
                         'project_id': str(project.id),

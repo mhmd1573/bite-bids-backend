@@ -544,8 +544,8 @@ async def stripe_webhook(
                         str(project.developer_id),
                         {
                             "type": "chat_room_created",
-                            "title": "💬 Chat with Investor Ready",
-                            "message": f"Payment received! Discuss '{project.title[:50]}' with {investor_user.name if investor_user else 'investor'}.",
+                            "title": "💬 New Investor Chat",
+                            "message": f"Your project '{project.title[:50]}' has received a confirmed investment. You can now chat with the investor.",
                             "link": f"/chat/{chat_room.id}",
                             "details": {
                                 "project_id": str(project.id),
@@ -561,8 +561,8 @@ async def stripe_webhook(
                         investor_id_str,
                         {
                             "type": "chat_room_created",
-                            "title": "💬 Chat with Developer Ready",
-                            "message": f"Payment confirmed! Discuss '{project.title[:50]}' with {developer_user.name if developer_user else 'developer'}.",
+                            "title": "💬 Chat with Developer Opened",
+                            "message": f"Your investment has been confirmed. You can now chat with the developer about '{project.title[:50]}'.",
                             "link": f"/chat/{chat_room.id}",
                             "details": {
                                 "project_id": str(project.id),
