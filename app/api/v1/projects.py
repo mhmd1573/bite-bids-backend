@@ -724,6 +724,8 @@ async def simple_approve_project(
             logger.info(f"✅ Admin notification created for {admin.email}")
 
         # ✅ SEND SYSTEM MESSAGE TO CHAT
+        confirmed_room_id = None
+        confirmed_system_message = None
         try:
             room_query = await db.execute(
                 select(ChatRoom).where(
@@ -753,26 +755,38 @@ async def simple_approve_project(
                     created_at=datetime.utcnow()
                 )
                 db.add(system_message)
+                await db.flush()  # Get the ID before broadcasting
                 logger.info(f"✅ System message added to chat room {room.id}")
-
-                # 📡 Broadcast live update to the chat room so the DEVELOPER
-                # sees the confirmation without refreshing the page
-                try:
-                    await manager.broadcast_to_room(str(room.id), {
-                        "type": "project_confirmed",
-                        "room_id": str(room.id),
-                        "project_id": str(project.id),
-                        "investor_id": str(user_uuid),
-                        "status": project.status,
-                        "developer_payout": float(developer_payout)
-                    })
-                    logger.info(f"📡 Broadcast project_confirmed to room {room.id}")
-                except Exception as broadcast_err:
-                    logger.error(f"Failed to broadcast project_confirmed: {broadcast_err}")
+                # Store references for live broadcast AFTER commit (to avoid race conditions)
+                confirmed_room_id = str(room.id)
+                confirmed_system_message = model_to_dict(system_message)
         except Exception as e:
             logger.error(f"Error adding system message to chat: {e}")
 
         await db.commit()
+
+        # 📡 Broadcast live updates AFTER commit so all parties
+        # immediately see the confirmed state without refreshing
+        # (avoids race condition where the payout isn't visible yet)
+        try:
+            # 1. Broadcast the system message LIVE so both parties see it in the chat
+            if confirmed_system_message is not None and confirmed_room_id:
+                await manager.send_chat_message(confirmed_room_id, confirmed_system_message)
+                logger.info(f"📡 Broadcast system message to room {confirmed_room_id}")
+
+            # 2. Broadcast project_confirmed so the developer's chat locks instantly
+            if confirmed_room_id:
+                await manager.broadcast_to_room(confirmed_room_id, {
+                    "type": "project_confirmed",
+                    "room_id": confirmed_room_id,
+                    "project_id": str(project.id),
+                    "investor_id": str(user_uuid),
+                    "status": project.status,
+                    "developer_payout": float(developer_payout)
+                })
+                logger.info(f"📡 Broadcast project_confirmed to room {confirmed_room_id}")
+        except Exception as broadcast_err:
+            logger.error(f"Failed to broadcast confirmation updates: {broadcast_err}")
 
         # ✅ SEND LIVE NOTIFICATION
         try:
