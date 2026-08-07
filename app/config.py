@@ -50,6 +50,19 @@ class Settings:
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
 
+    # Payoneer Checkout (replaces Stripe Checkout for collecting payments)
+    # Example base URLs:
+    #   Sandbox: https://api.sandbox.oscato.com/api
+    #   Live:    https://api.oscato.com/api
+    PAYONEER_API_BASE_URL: str = os.getenv("PAYONEER_API_BASE_URL", "https://api.sandbox.oscato.com/api")
+    PAYONEER_AUTH_TOKEN: str = os.getenv("PAYONEER_AUTH_TOKEN")
+    # Store code shown on the Integration page in your Payoneer account portal
+    PAYONEER_DIVISION: str = os.getenv("PAYONEER_DIVISION", "")
+    # Two-letter country where the payment originates (ISO 3166-1 alpha-2)
+    PAYONEER_COUNTRY: str = os.getenv("PAYONEER_COUNTRY", "US")
+    # Optional shared secret echoed in notification headers for webhook verification
+    PAYONEER_WEBHOOK_SECRET: str = os.getenv("PAYONEER_WEBHOOK_SECRET")
+
 
     # Cloudflare R2
     R2_ACCOUNT_ID: str = os.getenv("R2_ACCOUNT_ID")
